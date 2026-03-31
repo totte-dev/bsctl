@@ -99,7 +99,7 @@ fn catalog_list_with_type_filter() {
     let output = runner.stdout(&["catalog", "list", "-t", "client-account"]);
 
     assert!(output.contains("client-tc3"));
-    assert!(output.contains("TYPE/ENV"));
+    assert!(output.contains("TYPE"));
     mock.assert();
 }
 

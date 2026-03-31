@@ -115,6 +115,7 @@ impl Cell {
 }
 
 /// Color an environment label
+#[allow(dead_code)]
 pub fn env_style(env: &str) -> Style {
     match env {
         "prod" | "production" => Style::Green,

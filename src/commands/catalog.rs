@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use anyhow::Result;
 use clap::Subcommand;
 use colored::Colorize;
@@ -19,6 +17,10 @@ pub enum CatalogCommand {
         /// Filter by spec.type (e.g. client-account, tenant, service)
         #[arg(long, short = 't')]
         r#type: Option<String>,
+
+        /// Filter by tag (e.g. dev, prod, client)
+        #[arg(long)]
+        tag: Option<String>,
 
         /// Filter by namespace
         #[arg(long)]
@@ -81,10 +83,6 @@ struct EntityMetadata {
     namespace: Option<String>,
     #[serde(default)]
     description: Option<String>,
-    #[serde(default)]
-    annotations: Option<HashMap<String, String>>,
-    #[serde(default)]
-    tags: Option<Vec<String>>,
 }
 
 pub async fn run(client: &BackstageClient, command: CatalogCommand) -> Result<()> {
@@ -92,9 +90,10 @@ pub async fn run(client: &BackstageClient, command: CatalogCommand) -> Result<()
         CatalogCommand::List {
             kind,
             r#type,
+            tag,
             namespace,
             output,
-        } => list(client, kind, r#type, namespace, output).await,
+        } => list(client, kind, r#type, tag, namespace, output).await,
         CatalogCommand::Get { entity_ref, output } => get(client, &entity_ref, output).await,
         CatalogCommand::Refresh { entity_ref } => refresh(client, &entity_ref).await,
     }
@@ -104,6 +103,7 @@ async fn list(
     client: &BackstageClient,
     kind: Option<String>,
     r#type: Option<String>,
+    tag: Option<String>,
     namespace: Option<String>,
     output: OutputFormat,
 ) -> Result<()> {
@@ -113,6 +113,9 @@ async fn list(
     }
     if let Some(t) = &r#type {
         filters.push(format!("spec.type={t}"));
+    }
+    if let Some(tag) = &tag {
+        filters.push(format!("metadata.tags={tag}"));
     }
     if let Some(ns) = &namespace {
         filters.push(format!("metadata.namespace={ns}"));
@@ -129,7 +132,7 @@ async fn list(
     match output {
         OutputFormat::Table => {
             let rows: Vec<Vec<Cell>> = entities.iter().map(format_entity_row).collect();
-            display::table(&["Name", "Type/Env", "Description"], &rows);
+            display::table(&["Name", "Kind", "Type", "Owner", "Description"], &rows);
         }
         OutputFormat::Json => {
             println!(
@@ -153,56 +156,22 @@ async fn list(
 }
 
 fn format_entity_row(e: &Entity) -> Vec<Cell> {
-    let annotations = e.metadata.annotations.as_ref();
+    let name = Cell::new(&e.metadata.name);
+    let kind = Cell::styled(&e.kind, Style::Dim);
+    let entity_type = Cell::new(e.spec.entity_type.as_deref().unwrap_or(""));
+    let owner = Cell::styled(e.spec.owner.as_deref().unwrap_or(""), Style::Dim);
+    let desc = Cell::styled(
+        e.metadata
+            .description
+            .as_deref()
+            .unwrap_or("")
+            .lines()
+            .next()
+            .unwrap_or(""),
+        Style::Dim,
+    );
 
-    // Name is always first and bold
-    let name = Cell::styled(&e.metadata.name, Style::Bold);
-
-    // Second column depends on entity type
-    let detail = match e.spec.entity_type.as_deref() {
-        Some("tenant") => {
-            // Show environment from tags or annotations
-            let env = e
-                .metadata
-                .tags
-                .as_ref()
-                .and_then(|tags| {
-                    tags.iter()
-                        .find(|t| matches!(t.as_str(), "dev" | "preview" | "prod"))
-                })
-                .or_else(|| annotations.and_then(|a| a.get("tactna.io/environment")))
-                .map(|s| s.as_str())
-                .unwrap_or("");
-            Cell::styled(env, display::env_style(env))
-        }
-        Some("client-account") => {
-            // Show AWS account ID
-            let account_id = annotations
-                .and_then(|a| a.get("tactna.io/client-account-id"))
-                .map(|s| s.as_str())
-                .unwrap_or("");
-            Cell::styled(account_id, Style::Dim)
-        }
-        _ => {
-            // Show type or kind
-            let kind_lower = e.kind.to_lowercase();
-            let label = e.spec.entity_type.as_deref().unwrap_or(&kind_lower);
-            Cell::styled(label, Style::Dim)
-        }
-    };
-
-    // Third column: description or owner
-    let desc = e
-        .metadata
-        .description
-        .as_deref()
-        .unwrap_or("")
-        .lines()
-        .next()
-        .unwrap_or("");
-    let desc_cell = Cell::styled(desc, Style::Dim);
-
-    vec![name, detail, desc_cell]
+    vec![name, kind, entity_type, owner, desc]
 }
 
 async fn get(client: &BackstageClient, entity_ref: &str, output: OutputFormat) -> Result<()> {
