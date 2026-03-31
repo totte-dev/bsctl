@@ -122,23 +122,61 @@ pub struct ParamDef {
 
 impl PluginConfig {
     pub fn load() -> Result<Self> {
-        let candidates = [
+        // Try .bsctl/ directory first (split files), then single .bsctl.yaml
+        let dir_candidates = [
+            std::env::current_dir().ok().map(|p| p.join(".bsctl")),
+            dirs::home_dir().map(|p| p.join(".bsctl")),
+        ];
+
+        for dir in dir_candidates.into_iter().flatten() {
+            if dir.is_dir() {
+                return Self::load_from_dir(&dir);
+            }
+        }
+
+        let file_candidates = [
             std::env::current_dir().ok().map(|p| p.join(".bsctl.yaml")),
             std::env::current_dir().ok().map(|p| p.join(".bsctl.yml")),
             dirs::home_dir().map(|p| p.join(".bsctl.yaml")),
             dirs::home_dir().map(|p| p.join(".bsctl.yml")),
         ];
 
-        for candidate in candidates.into_iter().flatten() {
+        for candidate in file_candidates.into_iter().flatten() {
             if candidate.exists() {
-                return Self::load_from(&candidate);
+                return Self::load_from_file(&candidate);
             }
         }
 
         Ok(Self::default())
     }
 
-    fn load_from(path: &Path) -> Result<Self> {
+    fn load_from_dir(dir: &Path) -> Result<Self> {
+        let mut config = Self::default();
+
+        // Load plugins from plugins.yaml
+        let plugins_path = dir.join("plugins.yaml");
+        if plugins_path.exists() {
+            let content = std::fs::read_to_string(&plugins_path)
+                .with_context(|| format!("Failed to read {}", plugins_path.display()))?;
+            let partial: PluginsFile = serde_yaml_neo::from_str(&content)
+                .with_context(|| format!("Failed to parse {}", plugins_path.display()))?;
+            config.plugins = partial;
+        }
+
+        // Load columns from columns.yaml
+        let columns_path = dir.join("columns.yaml");
+        if columns_path.exists() {
+            let content = std::fs::read_to_string(&columns_path)
+                .with_context(|| format!("Failed to read {}", columns_path.display()))?;
+            let partial: ColumnsFile = serde_yaml_neo::from_str(&content)
+                .with_context(|| format!("Failed to parse {}", columns_path.display()))?;
+            config.columns = partial;
+        }
+
+        Ok(config)
+    }
+
+    fn load_from_file(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
         let config: Self = serde_yaml_neo::from_str(&content)
@@ -146,6 +184,12 @@ impl PluginConfig {
         Ok(config)
     }
 }
+
+/// plugins.yaml: top-level keys are plugin names directly
+type PluginsFile = BTreeMap<String, BTreeMap<String, CommandDef>>;
+
+/// columns.yaml: top-level keys are entity type names directly
+type ColumnsFile = BTreeMap<String, Vec<ColumnDef>>;
 
 pub async fn run(
     client: &BackstageClient,
