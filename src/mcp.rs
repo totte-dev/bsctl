@@ -7,10 +7,12 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::client::BackstageClient;
+use crate::plugin::PluginConfig;
 
 #[derive(Clone)]
 pub struct BsctlMcp {
     client: BackstageClient,
+    plugin_config: PluginConfig,
     tool_router: ToolRouter<Self>,
 }
 
@@ -77,17 +79,20 @@ pub struct CatalogRefreshParams {
 
 #[tool_router]
 impl BsctlMcp {
-    pub fn new(client: BackstageClient) -> Self {
+    pub fn new(client: BackstageClient, plugin_config: PluginConfig) -> Self {
         Self {
             client,
+            plugin_config,
             tool_router: Self::tool_router(),
         }
     }
 
-    /// List entities in the Backstage catalog, optionally filtered by kind and type
+    /// List entities in the Backstage catalog, optionally filtered by kind and type.
+    /// When custom columns are defined for the type in .bsctl/columns/, returns
+    /// a compact summary with extracted fields instead of full entities.
     #[tool(
         name = "catalog_list",
-        description = "List entities in the Backstage catalog"
+        description = "List entities in the Backstage catalog. Returns compact summary when custom columns are configured for the type."
     )]
     async fn catalog_list(&self, params: Parameters<CatalogListParams>) -> String {
         let p = params.0;
@@ -103,13 +108,48 @@ impl BsctlMcp {
         } else {
             format!("?filter={}", filters.join(","))
         };
-        match self
+        let entities: Vec<serde_json::Value> = match self
             .client
-            .get::<serde_json::Value>(&format!("/api/catalog/entities{query}"))
+            .get(&format!("/api/catalog/entities{query}"))
             .await
         {
-            Ok(v) => serde_json::to_string_pretty(&v).unwrap_or_else(|e| e.to_string()),
-            Err(e) => format!("Error: {e}"),
+            Ok(v) => v,
+            Err(e) => return format!("Error: {e}"),
+        };
+
+        // If custom columns are defined for this type, extract a compact summary
+        let custom_columns = p
+            .entity_type
+            .as_ref()
+            .and_then(|t| self.plugin_config.columns.get(t));
+
+        if let Some(columns) = custom_columns {
+            let summary: Vec<serde_json::Value> = entities
+                .iter()
+                .map(|e| {
+                    let mut obj = serde_json::Map::new();
+                    // Always include name
+                    if let Some(name) = e
+                        .get("metadata")
+                        .and_then(|m| m.get("name"))
+                        .and_then(|v| v.as_str())
+                    {
+                        obj.insert("name".into(), name.into());
+                    }
+                    // Extract custom column values
+                    for col in columns {
+                        let key = col.header.to_lowercase().replace(' ', "_");
+                        let value = col.extract(e);
+                        if !value.is_empty() {
+                            obj.insert(key, value.into());
+                        }
+                    }
+                    serde_json::Value::Object(obj)
+                })
+                .collect();
+            serde_json::to_string_pretty(&summary).unwrap_or_else(|e| e.to_string())
+        } else {
+            serde_json::to_string_pretty(&entities).unwrap_or_else(|e| e.to_string())
         }
     }
 
@@ -276,7 +316,8 @@ fn parse_ref(entity_ref: &str) -> anyhow::Result<(String, String, String)> {
 
 /// Start the MCP server on stdio
 pub async fn serve(client: BackstageClient) -> anyhow::Result<()> {
-    let server = BsctlMcp::new(client);
+    let plugin_config = PluginConfig::load()?;
+    let server = BsctlMcp::new(client, plugin_config);
     let transport = transport::io::stdio();
     let service = server.serve(transport).await?;
     service.waiting().await?;

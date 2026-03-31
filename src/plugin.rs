@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::client::BackstageClient;
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Clone)]
 pub struct PluginConfig {
     #[serde(default)]
     pub plugins: BTreeMap<String, BTreeMap<String, CommandDef>>,
