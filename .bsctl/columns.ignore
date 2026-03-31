@@ -1,6 +1,0 @@
-# Annotation patterns to exclude from column generation and display
-# One pattern per line. Matches against the full annotation key.
-# Supports prefix* and *suffix wildcards.
-
-*/terraform-path
-*/suffix

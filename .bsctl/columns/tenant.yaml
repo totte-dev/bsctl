@@ -1,7 +1,0 @@
-- header: Env
-  path: metadata.annotations.tactna.io/environment
-  style: env
-- header: Customer
-  path: metadata.annotations.tactna.io/customer
-- header: Terraform Path
-  path: metadata.annotations.tactna.io/terraform-path
