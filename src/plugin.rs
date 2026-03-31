@@ -310,12 +310,12 @@ pub async fn run(
         path = format!("{path}{sep}{}", query_parts.join("&"));
     }
 
+    let body = serde_json::Value::Object(body_map);
     let resp: serde_json::Value = match cmd.method {
-        Method::Get | Method::Delete => client.get(&path).await?,
-        Method::Post | Method::Put => {
-            let body = serde_json::Value::Object(body_map);
-            client.post(&path, &body).await?
-        }
+        Method::Get => client.get(&path).await?,
+        Method::Post => client.post(&path, &body).await?,
+        Method::Put => client.put(&path, &body).await?,
+        Method::Delete => client.delete(&path).await?,
     };
 
     println!("{}", serde_json::to_string_pretty(&resp)?);

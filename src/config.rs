@@ -23,7 +23,8 @@ pub struct ContextConfig {
 impl Config {
     pub fn config_dir() -> PathBuf {
         dirs::config_dir()
-            .unwrap_or_else(|| dirs::home_dir().unwrap().join(".config"))
+            .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+            .unwrap_or_else(|| PathBuf::from(".config"))
             .join("bsctl")
     }
 

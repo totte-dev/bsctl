@@ -116,7 +116,8 @@ fn login_browser(base_url: &str, provider: &str) -> Result<String> {
     let callback_url = format!("http://localhost:{port}/callback");
 
     let auth_url = format!(
-        "{base_url}/api/auth/{provider}/start?env=production&scope=&redirect={callback_url}"
+        "{base_url}/api/auth/{provider}/start?env=production&scope=&redirect={}",
+        urlencoding::encode(&callback_url)
     );
 
     println!("Opening browser for authentication...");
@@ -284,7 +285,10 @@ fn is_token_expired(token: &str) -> bool {
 fn token_remaining_secs(token: &str) -> Option<i64> {
     let payload = decode_jwt_payload(token)?;
     let exp = payload.get("exp")?.as_i64()?;
-    let now = chrono::Utc::now().timestamp();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
     Some(exp - now)
 }
 

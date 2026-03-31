@@ -60,7 +60,7 @@ pub fn table(headers: &[&str], rows: &[Vec<Cell>]) {
     for row in rows {
         for (i, cell) in row.iter().enumerate().take(col_count) {
             let text = if cell.text.len() > widths[i] {
-                format!("{}…", &cell.text[..widths[i] - 1])
+                truncate_utf8(&cell.text, widths[i].saturating_sub(1))
             } else {
                 cell.text.clone()
             };
@@ -123,4 +123,10 @@ pub fn env_style(env: &str) -> Style {
         "dev" | "development" => Style::Blue,
         _ => Style::Default,
     }
+}
+
+/// Truncate a string to max_chars characters, safe for multi-byte UTF-8.
+fn truncate_utf8(s: &str, max_chars: usize) -> String {
+    let truncated: String = s.chars().take(max_chars).collect();
+    format!("{truncated}…")
 }

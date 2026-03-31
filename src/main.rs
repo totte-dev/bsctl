@@ -240,9 +240,15 @@ async fn run_plugin_command(
     while i < args.len() {
         if args[i].starts_with("--") {
             let key = args[i].trim_start_matches("--").to_string();
-            let value = args.get(i + 1).cloned().unwrap_or_default();
-            named.push((key, value));
-            i += 2;
+            // Check if next arg is a value (not another flag) or missing
+            let has_value = args.get(i + 1).is_some_and(|next| !next.starts_with("--"));
+            if has_value {
+                named.push((key, args[i + 1].clone()));
+                i += 2;
+            } else {
+                named.push((key, "true".to_string()));
+                i += 1;
+            }
         } else {
             positional.push(args[i].clone());
             i += 1;
