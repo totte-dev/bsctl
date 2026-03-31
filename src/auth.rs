@@ -129,24 +129,23 @@ fn login_browser(base_url: &str, provider: &str) -> Result<String> {
 
     println!("Waiting for authentication callback (timeout: 5 minutes)...");
 
-    listener
-        .set_nonblocking(false)
-        .context("Failed to configure listener")?;
-    // Set a 5-minute timeout for the OAuth callback
-    let timeout = std::time::Duration::from_secs(300);
-    let start = std::time::Instant::now();
+    // Set non-blocking with a coarse-grained poll (1s intervals, 300 iterations max)
+    // This is much lighter than the previous 100ms polling
     listener
         .set_nonblocking(true)
         .context("Failed to set non-blocking")?;
 
+    let timeout_secs = 300;
+    let mut elapsed = 0;
     let (mut stream, _) = loop {
         match listener.accept() {
             Ok(conn) => break conn,
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if start.elapsed() > timeout {
+                if elapsed >= timeout_secs {
                     anyhow::bail!("Authentication timed out after 5 minutes. Please try again.");
                 }
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                elapsed += 1;
             }
             Err(e) => return Err(e).context("Failed to accept callback"),
         }

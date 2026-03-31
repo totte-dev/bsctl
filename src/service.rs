@@ -42,9 +42,10 @@ pub async fn catalog_list(
         query_params.push(format!("limit={limit}"));
     }
     if let Some(offset) = opts.offset
-        && offset > 0 {
-            query_params.push(format!("offset={offset}"));
-        }
+        && offset > 0
+    {
+        query_params.push(format!("offset={offset}"));
+    }
 
     let query = if query_params.is_empty() {
         String::new()
