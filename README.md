@@ -16,6 +16,10 @@ A CLI client and MCP server for [Backstage](https://backstage.io), built in Rust
 ## Install
 
 ```bash
+# From crates.io
+cargo install bsctl
+
+# From source
 cargo install --path .
 ```
 
