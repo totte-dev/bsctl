@@ -38,43 +38,35 @@ impl BackstageClient {
         self.token.read().expect("token lock poisoned").clone()
     }
 
-    async fn request<T: DeserializeOwned>(&self, method: reqwest::Method, path: &str) -> Result<T> {
+    fn build_request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
         let url = format!("{}{}", self.base_url, path);
         let mut req = self.http.request(method, &url);
         if let Some(token) = self.current_token() {
             req = req.bearer_auth(token);
         }
-        let resp = req.send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("API error {status}: {body}");
-        }
-        Ok(resp.json().await?)
+        req
     }
 
-    async fn request_with_body<T: DeserializeOwned>(
-        &self,
-        method: reqwest::Method,
-        path: &str,
-        body: &impl serde::Serialize,
-    ) -> Result<T> {
-        let url = format!("{}{}", self.base_url, path);
-        let mut req = self.http.request(method, &url).json(body);
-        if let Some(token) = self.current_token() {
-            req = req.bearer_auth(token);
-        }
+    async fn send_and_parse<T: DeserializeOwned>(&self, req: reqwest::RequestBuilder) -> Result<T> {
         let resp = req.send().await?;
         let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("API error {status}: {body}");
+            anyhow::bail!("{}", format_api_error(status, &body));
         }
-        Ok(resp.json().await?)
+
+        serde_json::from_str(&body).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to parse response: {e}\nBody: {}",
+                truncate(&body, 500)
+            )
+        })
     }
 
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        self.request(reqwest::Method::GET, path).await
+        let req = self.build_request(reqwest::Method::GET, path);
+        self.send_and_parse(req).await
     }
 
     pub async fn post<T: DeserializeOwned>(
@@ -82,8 +74,8 @@ impl BackstageClient {
         path: &str,
         body: &impl serde::Serialize,
     ) -> Result<T> {
-        self.request_with_body(reqwest::Method::POST, path, body)
-            .await
+        let req = self.build_request(reqwest::Method::POST, path).json(body);
+        self.send_and_parse(req).await
     }
 
     pub async fn put<T: DeserializeOwned>(
@@ -91,29 +83,58 @@ impl BackstageClient {
         path: &str,
         body: &impl serde::Serialize,
     ) -> Result<T> {
-        self.request_with_body(reqwest::Method::PUT, path, body)
-            .await
+        let req = self.build_request(reqwest::Method::PUT, path).json(body);
+        self.send_and_parse(req).await
     }
 
     #[allow(dead_code)]
     pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        self.request(reqwest::Method::DELETE, path).await
+        let req = self.build_request(reqwest::Method::DELETE, path);
+        self.send_and_parse(req).await
     }
 
-    /// Send a DELETE request, returning the raw response text.
-    /// Handles 204 No Content gracefully.
     pub async fn delete_raw(&self, path: &str) -> Result<String> {
-        let url = format!("{}{}", self.base_url, path);
-        let mut req = self.http.request(reqwest::Method::DELETE, &url);
-        if let Some(token) = self.current_token() {
-            req = req.bearer_auth(token);
-        }
+        let req = self.build_request(reqwest::Method::DELETE, path);
         let resp = req.send().await?;
         let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("API error {status}: {body}");
+            anyhow::bail!("{}", format_api_error(status, &body));
         }
-        Ok(resp.text().await.unwrap_or_default())
+        Ok(body)
     }
+}
+
+/// Extract a human-readable error message from Backstage API responses.
+/// Backstage returns structured errors like:
+/// ```json
+/// {"error": {"name": "NotFoundError", "message": "Entity not found"}}
+/// ```
+fn format_api_error(status: reqwest::StatusCode, body: &str) -> String {
+    // Try to parse as Backstage structured error
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(msg) = json
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+        {
+            let name = json
+                .get("error")
+                .and_then(|e| e.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
+            return if name.is_empty() {
+                format!("{status}: {msg}")
+            } else {
+                format!("{status} ({name}): {msg}")
+            };
+        }
+    }
+    // Fall back to raw body
+    format!("{status}: {}", truncate(body, 500))
+}
+
+fn truncate(s: &str, max: usize) -> &str {
+    if s.len() > max { &s[..max] } else { s }
 }
