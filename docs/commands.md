@@ -6,17 +6,17 @@
 # List entities
 bsctl catalog list                              # All entities
 bsctl catalog list --kind Component             # Filter by kind
-bsctl catalog list -t tenant                    # Filter by spec.type
-bsctl catalog list -t tenant --sort name        # Sort by name/kind/type/owner
-bsctl catalog list -t tenant --tag dev          # Filter by tag
-bsctl catalog list --limit 100 --offset 500     # Pagination
+bsctl catalog list -t service                   # Filter by spec.type
+bsctl catalog list -t service --sort name       # Sort by name/kind/type/owner
+bsctl catalog list -t service --tag java        # Filter by tag
+bsctl catalog list --limit 100 --offset 200     # Client-side pagination
 bsctl catalog list -o json                      # JSON output
 bsctl catalog list -o jsonpath=metadata.name    # Extract field values
 bsctl catalog list -o jsonpath=$.spec.owner     # $ prefix supported
 
 # Get entity details
 bsctl catalog get component:my-service
-bsctl catalog get resource:default/client-tc3 -o json
+bsctl catalog get component:default/my-service -o json
 
 # Discover available values
 bsctl catalog facets kind                       # All entity kinds with counts
@@ -34,7 +34,7 @@ bsctl catalog refresh component:my-service
 ## Search
 
 ```bash
-bsctl search query "tenant"                     # Search catalog
+bsctl search query "payment"                    # Search catalog
 bsctl search query "api" -t software-catalog    # Filter by index type
 bsctl search query "deploy" --limit 50          # Limit results
 ```
@@ -47,12 +47,12 @@ bsctl template list
 bsctl template list -o json
 
 # Inspect parameter schema
-bsctl template describe my-template
+bsctl template describe create-react-app
 
 # Run
-bsctl template run my-template -p key1=value1 -p key2=value2
-bsctl template run my-template -p key=value --wait              # Block until done
-bsctl template run my-template -p key=value --wait --timeout 300  # Custom timeout
+bsctl template run create-react-app -p name=my-app -p owner=team-platform
+bsctl template run create-react-app -p name=my-app --wait               # Block until done
+bsctl template run create-react-app -p name=my-app --wait --timeout 300 # Custom timeout
 
 # Monitor
 bsctl template status <task-id>
@@ -106,9 +106,11 @@ bsctl costs get --account-id 123456789          # Example: AWS costs
 ## Custom Columns
 
 ```bash
-bsctl columns generate -t client-account        # Preview column definitions
-bsctl columns generate -t tenant --write         # Save to .bsctl/columns/
+bsctl columns generate -t service              # Preview column definitions
+bsctl columns generate -t service --write      # Save to .bsctl/columns/
 ```
+
+See [Custom Columns](custom-columns.md) for details.
 
 ## Other
 

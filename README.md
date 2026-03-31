@@ -28,15 +28,15 @@ bsctl login -p guest
 
 # Explore the catalog
 bsctl catalog list
-bsctl catalog list -t tenant --sort name --tag dev
-bsctl catalog get resource:my-entity
+bsctl catalog list -t service --sort name
+bsctl catalog get component:my-service
 bsctl catalog facets spec.type
-bsctl search query "my-service"
+bsctl search query "payment"
 
 # Work with templates
 bsctl template list
-bsctl template describe my-template
-bsctl template run my-template -p key=value --wait
+bsctl template describe create-react-app
+bsctl template run create-react-app -p name=my-app --wait
 ```
 
 ## Documentation

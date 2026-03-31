@@ -8,11 +8,11 @@ bsctl can show custom columns per entity type by reading annotation values from 
 
 ```bash
 # Preview what columns would be generated
-bsctl columns generate -t client-account
+bsctl columns generate -t service
 
 # Save directly to .bsctl/columns/
-bsctl columns generate -t client-account --write
-bsctl columns generate -t tenant --write
+bsctl columns generate -t service --write
+bsctl columns generate -t website --write
 ```
 
 ### Manual definition
@@ -20,25 +20,33 @@ bsctl columns generate -t tenant --write
 Create files in `.bsctl/columns/<type>.yaml`:
 
 ```yaml
-# .bsctl/columns/tenant.yaml
+# .bsctl/columns/service.yaml
+- header: On-Call
+  path: metadata.annotations.pagerduty.com/service-id
+- header: Grafana
+  path: metadata.annotations.grafana.com/dashboard-url
+- header: Language
+  path: metadata.annotations.backstage.io/language
+```
+
+```yaml
+# .bsctl/columns/website.yaml
 - header: Environment
-  path: metadata.annotations.my-org.io/environment
+  path: metadata.annotations.example.com/environment
   style: env  # dev=blue, preview=yellow, prod=green
-- header: Customer
-  path: metadata.annotations.my-org.io/customer
-- header: Account ID
-  path: metadata.annotations.my-org.io/account-id
+- header: URL
+  path: metadata.annotations.example.com/url
 ```
 
 ## Path Syntax
 
-Dot-separated paths into the entity JSON. For annotation keys containing dots (e.g., `my-org.io/key`), the resolver automatically tries joining remaining segments:
+Dot-separated paths into the entity JSON. For annotation keys containing dots (e.g., `pagerduty.com/service-id`), the resolver automatically tries joining remaining segments:
 
 ```
-metadata.annotations.my-org.io/customer
-^^^^^^^^ ^^^^^^^^^^^ ^^^^^^^^^^^^^^^^^^
+metadata.annotations.pagerduty.com/service-id
+^^^^^^^^ ^^^^^^^^^^^ ^^^^^^^^^^^^^^^^^^^^^^^^
   |         |              |
-  |         |              annotation key (joined: "my-org.io/customer")
+  |         |              annotation key (joined: "pagerduty.com/service-id")
   |         object key
   object key
 ```
@@ -54,10 +62,9 @@ Exclude noisy annotations from both `columns generate` and `catalog list` displa
 
 ```
 # .bsctl/columns.ignore
-*/terraform-path
-*/suffix
 backstage.io/*
-my-org.io/internal-*
+*/managed-by-*
+*/source-location
 ```
 
 Patterns:
@@ -71,9 +78,8 @@ Patterns:
 .bsctl/
   columns.ignore          # Exclude patterns
   columns/
-    client-account.yaml   # Columns for -t client-account
-    tenant.yaml           # Columns for -t tenant
-    shared-account.yaml   # Columns for -t shared-account
+    service.yaml          # Columns for -t service
+    website.yaml          # Columns for -t website
 ```
 
 When `catalog list -t <type>` is used and a matching column file exists, custom columns are shown. Otherwise, standard columns (Name, Kind, Type, Owner, Description) are displayed.

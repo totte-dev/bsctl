@@ -1,92 +1,50 @@
-# Example plugin configuration for prd-hammerhead Backstage
-# Copy this to your project root or ~/.bsctl.yaml
+# Example bsctl configuration
+# Copy to .bsctl.yaml or split into .bsctl/ directory
+# See docs/plugin-definition.md for full reference
 
 plugins:
-  terraform:
-    prs:
+  # Example: wrap a custom Backstage plugin API
+  todo:
+    list:
       method: GET
-      path: /api/terraform-ops/infra-prs
-      description: List infrastructure PRs
-    pr:
-      method: GET
-      path: /api/terraform-ops/pr/{number}
-      description: Get PR details with plan/apply comments
-      args:
-        - name: number
-          position: 1
-    merge:
+      path: /api/todo/todos
+      description: List TODO items
+    add:
       method: POST
-      path: /api/terraform-ops/pr/{number}/merge
-      description: Merge an infrastructure PR
+      path: /api/todo/todos
+      description: Create a TODO item
+      params:
+        - name: title
+          body: title
+          required: true
+        - name: entity-ref
+          body: entityRef
+
+  # Example: GitHub Actions integration
+  actions:
+    runs:
+      method: GET
+      path: /api/proxy/github/actions/runs
+      description: List recent workflow runs
+    run:
+      method: GET
+      path: /api/proxy/github/actions/runs/{id}
+      description: Get workflow run details
       args:
-        - name: number
+        - name: id
           position: 1
-    applies:
-      method: GET
-      path: /api/terraform-ops/recent-applies
-      description: List recently applied PRs
-    output:
-      method: GET
-      path: /api/terraform-output/output
-      description: Get terraform outputs for an entity
-      params:
-        - name: entity-ref
-          query: entityRef
-          required: true
-          description: "Entity reference (e.g. resource:default/tenant-tc3-dev-1)"
-        - name: refresh
-          query: refresh
-          description: Force refresh cached data
-    tfvars:
-      method: GET
-      path: /api/terraform-output/tfvars
-      description: Get terraform.tfvars for an entity
-      params:
-        - name: entity-ref
-          query: entityRef
-          required: true
-
-  lambda:
-    status:
-      method: GET
-      path: /api/lambda-deployments/shared-status
-      description: Lambda deployment status across shared accounts
-    client-status:
-      method: GET
-      path: /api/lambda-deployments/client-status
-      description: Lambda deployment status for a client account
-      params:
-        - name: account-id
-          query: accountId
-          required: true
-    groups:
-      method: GET
-      path: /api/lambda-deployments/service-groups
-      description: List service group configuration
-
-  costs:
-    get:
-      method: GET
-      path: /api/aws-costs/costs
-      description: Get AWS account billing costs by service
-      params:
-        - name: account-id
-          query: accountId
-          required: true
-          description: AWS account ID
 
 # Custom columns per entity type for `catalog list -t <type>`
+# Use `bsctl columns generate -t <type> --write` to auto-generate
 columns:
-  client-account:
-    - header: Account ID
-      path: metadata.annotations.tactna.io/client-account-id
-    - header: Customer
-      path: metadata.annotations.tactna.io/customer
-  tenant:
-    - header: Env
-      path: metadata.annotations.tactna.io/environment
+  service:
+    - header: On-Call
+      path: metadata.annotations.pagerduty.com/service-id
+    - header: Language
+      path: metadata.annotations.backstage.io/language
+  website:
+    - header: Environment
+      path: metadata.annotations.example.com/environment
       style: env
-    - header: Customer
-      path: metadata.annotations.tactna.io/customer
-    - header: Terraform Path
-      path: metadata.annotations.tactna.io/terraform-path
+    - header: URL
+      path: metadata.annotations.example.com/url
