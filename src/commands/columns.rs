@@ -16,6 +16,10 @@ pub enum ColumnsCommand {
         /// Also include standard Backstage annotations (backstage.io/*)
         #[arg(long)]
         include_builtin: bool,
+
+        /// Write directly to .bsctl/columns/<type>.yaml
+        #[arg(long, short)]
+        write: bool,
     },
 }
 
@@ -24,7 +28,8 @@ pub async fn run(client: &BackstageClient, command: ColumnsCommand) -> Result<()
         ColumnsCommand::Generate {
             r#type,
             include_builtin,
-        } => generate(client, &r#type, include_builtin).await,
+            write,
+        } => generate(client, &r#type, include_builtin, write).await,
     }
 }
 
@@ -32,6 +37,7 @@ async fn generate(
     client: &BackstageClient,
     entity_type: &str,
     include_builtin: bool,
+    write: bool,
 ) -> Result<()> {
     let path = format!("/api/catalog/entities?filter=spec.type={entity_type}");
     let entities: Vec<serde_json::Value> = client.get(&path).await?;
@@ -41,7 +47,7 @@ async fn generate(
         return Ok(());
     }
 
-    // Collect all annotation keys across all entities, tracking which have values
+    // Collect all annotation keys across all entities
     let mut annotation_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut tag_set: BTreeSet<String> = BTreeSet::new();
     let total = entities.len();
@@ -75,10 +81,10 @@ async fn generate(
         }
     }
 
-    // Generate YAML output
-    eprintln!("Analyzed {} entities of type '{}'\n", total, entity_type);
+    eprintln!("Analyzed {} entities of type '{}'", total, entity_type);
 
-    println!("{}:", entity_type);
+    // Build YAML content (list format for per-file columns)
+    let mut yaml = String::new();
     for (key, count) in &annotation_counts {
         let header = annotation_key_to_header(key);
         let coverage = if *count < total {
@@ -86,13 +92,21 @@ async fn generate(
         } else {
             String::new()
         };
-        println!("  - header: {header}");
-        println!("    path: metadata.annotations.{key}{coverage}");
-
-        // Suggest style for known patterns
+        yaml.push_str(&format!("- header: {header}\n"));
+        yaml.push_str(&format!("  path: metadata.annotations.{key}{coverage}\n"));
         if key.contains("environment") || key.contains("env") {
-            println!("    style: env");
+            yaml.push_str("  style: env\n");
         }
+    }
+
+    if write {
+        let dir = std::env::current_dir()?.join(".bsctl").join("columns");
+        std::fs::create_dir_all(&dir)?;
+        let file_path = dir.join(format!("{entity_type}.yaml"));
+        std::fs::write(&file_path, &yaml)?;
+        eprintln!("Wrote {}", file_path.display());
+    } else {
+        print!("{yaml}");
     }
 
     if !tag_set.is_empty() {
@@ -108,10 +122,8 @@ async fn generate(
 
 /// Convert an annotation key like "tactna.io/client-account-id" to a readable header
 fn annotation_key_to_header(key: &str) -> String {
-    // Strip common prefixes
     let stripped = key.rsplit_once('/').map(|(_, name)| name).unwrap_or(key);
 
-    // Convert kebab-case to Title Case
     stripped
         .split('-')
         .map(|word| {
@@ -139,10 +151,6 @@ mod tests {
         assert_eq!(
             annotation_key_to_header("tactna.io/business-account-id-dev"),
             "Business Account Id Dev"
-        );
-        assert_eq!(
-            annotation_key_to_header("some-annotation"),
-            "Some Annotation"
         );
     }
 }

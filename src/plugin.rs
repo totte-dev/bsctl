@@ -163,14 +163,42 @@ impl PluginConfig {
             config.plugins = partial;
         }
 
-        // Load columns from columns.yaml
-        let columns_path = dir.join("columns.yaml");
-        if columns_path.exists() {
-            let content = std::fs::read_to_string(&columns_path)
-                .with_context(|| format!("Failed to read {}", columns_path.display()))?;
-            let partial: ColumnsFile = serde_yaml_neo::from_str(&content)
-                .with_context(|| format!("Failed to parse {}", columns_path.display()))?;
-            config.columns = partial;
+        // Load columns from columns.yaml or columns/*.yaml
+        let columns_dir = dir.join("columns");
+        if columns_dir.is_dir() {
+            // Load each file in columns/ as a type-specific column definition
+            let mut entries: Vec<_> = std::fs::read_dir(&columns_dir)?
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .is_some_and(|ext| ext == "yaml" || ext == "yml")
+                })
+                .collect();
+            entries.sort_by_key(|e| e.path());
+            for entry in entries {
+                let path = entry.path();
+                let type_name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                let content = std::fs::read_to_string(&path)
+                    .with_context(|| format!("Failed to read {}", path.display()))?;
+                let cols: Vec<ColumnDef> = serde_yaml_neo::from_str(&content)
+                    .with_context(|| format!("Failed to parse {}", path.display()))?;
+                config.columns.insert(type_name, cols);
+            }
+        } else {
+            // Fallback: single columns.yaml
+            let columns_path = dir.join("columns.yaml");
+            if columns_path.exists() {
+                let content = std::fs::read_to_string(&columns_path)
+                    .with_context(|| format!("Failed to read {}", columns_path.display()))?;
+                let partial: ColumnsFile = serde_yaml_neo::from_str(&content)
+                    .with_context(|| format!("Failed to parse {}", columns_path.display()))?;
+                config.columns = partial;
+            }
         }
 
         Ok(config)
