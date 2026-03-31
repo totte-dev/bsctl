@@ -50,6 +50,11 @@ enum Commands {
         #[command(subcommand)]
         command: commands::api::ApiCommand,
     },
+    /// Auto-generate custom column definitions
+    Columns {
+        #[command(subcommand)]
+        command: commands::columns::ColumnsCommand,
+    },
     /// Authenticate with a Backstage instance
     Login {
         /// Auth provider (e.g. github, google, okta, microsoft)
@@ -157,6 +162,7 @@ async fn main() -> Result<()> {
         Commands::Catalog { command } => {
             commands::catalog::run(&client, command, &plugin_config).await?
         }
+        Commands::Columns { command } => commands::columns::run(&client, command).await?,
         Commands::Search { command } => commands::search::run(&client, command).await?,
         Commands::Template { command } => commands::template::run(&client, command).await?,
         Commands::Api { command } => commands::api::run(&client, command).await?,
