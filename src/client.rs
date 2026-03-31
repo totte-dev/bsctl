@@ -113,8 +113,8 @@ impl BackstageClient {
 /// ```
 fn format_api_error(status: reqwest::StatusCode, body: &str) -> String {
     // Try to parse as Backstage structured error
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
-        if let Some(msg) = json
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(body)
+        && let Some(msg) = json
             .get("error")
             .and_then(|e| e.get("message"))
             .and_then(|m| m.as_str())
@@ -130,7 +130,6 @@ fn format_api_error(status: reqwest::StatusCode, body: &str) -> String {
                 format!("{status} ({name}): {msg}")
             };
         }
-    }
     // Fall back to raw body
     format!("{status}: {}", truncate(body, 500))
 }

@@ -5,6 +5,7 @@ use serde::Deserialize;
 
 use crate::client::BackstageClient;
 use crate::display::{self, Cell, Style};
+use crate::service;
 
 #[derive(Subcommand)]
 pub enum CatalogCommand {
@@ -122,11 +123,11 @@ pub async fn run(
         } => {
             list(
                 client,
-                kind,
-                r#type,
-                tag,
-                namespace,
-                sort,
+                kind.as_deref(),
+                r#type.as_deref(),
+                tag.as_deref(),
+                namespace.as_deref(),
+                sort.as_deref(),
                 limit,
                 offset,
                 &output,
@@ -145,41 +146,25 @@ pub async fn run(
 #[allow(clippy::too_many_arguments)]
 async fn list(
     client: &BackstageClient,
-    kind: Option<String>,
-    r#type: Option<String>,
-    tag: Option<String>,
-    namespace: Option<String>,
-    sort: Option<String>,
+    kind: Option<&str>,
+    r#type: Option<&str>,
+    tag: Option<&str>,
+    namespace: Option<&str>,
+    sort: Option<&str>,
     limit: usize,
     offset: usize,
     output: &str,
     plugin_config: &crate::plugin::PluginConfig,
 ) -> Result<()> {
-    let mut filters = Vec::new();
-    if let Some(kind) = &kind {
-        filters.push(format!("kind={kind}"));
-    }
-    if let Some(t) = &r#type {
-        filters.push(format!("spec.type={t}"));
-    }
-    if let Some(tag) = &tag {
-        filters.push(format!("metadata.tags={tag}"));
-    }
-    if let Some(ns) = &namespace {
-        filters.push(format!("metadata.namespace={ns}"));
-    }
-
-    let query = if filters.is_empty() {
-        String::new()
-    } else {
-        format!("?filter={}", filters.join(","))
-    };
-
-    // Backstage catalog API returns all matching entities (no server-side pagination)
-    let mut entities: Vec<serde_json::Value> =
-        client.get(&format!("/api/catalog/entities{query}")).await?;
-
+    let mut entities = service::catalog_list(client, kind, r#type, tag, namespace).await?;
     let total = entities.len();
+
+    // Client-side sort
+    if let Some(sort_field) = sort {
+        entities.sort_by(|a, b| {
+            extract_sort_field(a, sort_field).cmp(&extract_sort_field(b, sort_field))
+        });
+    }
 
     // Client-side offset + limit
     if offset > 0 {
@@ -190,15 +175,6 @@ async fn list(
             "Showing {limit} of {total} entities. Use --limit to show more, --offset to paginate."
         );
         entities.truncate(limit);
-    }
-
-    // Sort
-    if let Some(sort_field) = &sort {
-        entities.sort_by(|a, b| {
-            let va = extract_sort_field(a, sort_field);
-            let vb = extract_sort_field(b, sort_field);
-            va.cmp(&vb)
-        });
     }
 
     // Output
@@ -213,11 +189,9 @@ async fn list(
     }
 
     match output {
-        "json" => {
-            println!("{}", serde_json::to_string_pretty(&entities)?);
-        }
+        "json" => println!("{}", serde_json::to_string_pretty(&entities)?),
         _ => {
-            let custom_columns = r#type.as_ref().and_then(|t| plugin_config.columns.get(t));
+            let custom_columns = r#type.and_then(|t| plugin_config.columns.get(t));
 
             if let Some(columns) = custom_columns {
                 let mut headers: Vec<&str> = vec!["Name"];
@@ -270,7 +244,6 @@ fn extract_sort_field(entity: &serde_json::Value, field: &str) -> String {
 /// Simple jsonpath extraction: supports dot-separated field paths.
 /// Strips leading `$` or `$.` prefix for compatibility with standard jsonpath syntax.
 fn extract_jsonpath(entity: &serde_json::Value, expr: &str) -> String {
-    // Strip leading $ or $.
     let expr = expr
         .strip_prefix("$.")
         .or_else(|| expr.strip_prefix('$'))
@@ -305,21 +278,20 @@ fn first_line(s: &str) -> &str {
 }
 
 fn format_entity_row(e: &Entity) -> Vec<Cell> {
-    let name = Cell::new(&e.metadata.name);
-    let kind = Cell::styled(&e.kind, Style::Dim);
-    let entity_type = Cell::new(e.spec.entity_type.as_deref().unwrap_or(""));
-    let owner = Cell::styled(e.spec.owner.as_deref().unwrap_or(""), Style::Dim);
-    let desc = Cell::styled(
-        first_line(e.metadata.description.as_deref().unwrap_or("")),
-        Style::Dim,
-    );
-    vec![name, kind, entity_type, owner, desc]
+    vec![
+        Cell::new(&e.metadata.name),
+        Cell::styled(&e.kind, Style::Dim),
+        Cell::new(e.spec.entity_type.as_deref().unwrap_or("")),
+        Cell::styled(e.spec.owner.as_deref().unwrap_or(""), Style::Dim),
+        Cell::styled(
+            first_line(e.metadata.description.as_deref().unwrap_or("")),
+            Style::Dim,
+        ),
+    ]
 }
 
 async fn get(client: &BackstageClient, entity_ref: &str, output: &str) -> Result<()> {
-    let (kind, namespace, name) = parse_entity_ref(entity_ref)?;
-    let path = format!("/api/catalog/entities/by-name/{kind}/{namespace}/{name}");
-    let entity: serde_json::Value = client.get(&path).await?;
+    let entity = service::catalog_get(client, entity_ref).await?;
 
     if let Some(expr) = output.strip_prefix("jsonpath=") {
         println!("{}", extract_jsonpath(&entity, expr));
@@ -327,92 +299,81 @@ async fn get(client: &BackstageClient, entity_ref: &str, output: &str) -> Result
     }
 
     match output {
-        "json" => {
-            println!("{}", serde_json::to_string_pretty(&entity)?);
-        }
-        _ => {
-            let metadata = entity.get("metadata").cloned().unwrap_or_default();
-            let spec = entity.get("spec").cloned().unwrap_or_default();
-
-            let kind_str = entity.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-            let name_str = metadata.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let desc = metadata
-                .get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            println!("\n{} {}", format!("{kind_str}:").dimmed(), name_str.bold());
-            if !desc.is_empty() {
-                println!("{}", desc.dimmed());
-            }
-
-            let mut fields = Vec::new();
-            if let Some(v) = spec.get("type").and_then(|v| v.as_str()) {
-                fields.push(("Type", v.to_string()));
-            }
-            if let Some(v) = spec.get("lifecycle").and_then(|v| v.as_str()) {
-                fields.push(("Lifecycle", v.to_string()));
-            }
-            if let Some(v) = spec.get("owner").and_then(|v| v.as_str()) {
-                fields.push(("Owner", v.to_string()));
-            }
-            if let Some(v) = spec.get("system").and_then(|v| v.as_str()) {
-                fields.push(("System", v.to_string()));
-            }
-
-            if !fields.is_empty() {
-                println!();
-                for (label, value) in &fields {
-                    println!("  {:<12} {}", format!("{label}:").dimmed(), value);
-                }
-            }
-
-            if let Some(annotations) = metadata.get("annotations").and_then(|v| v.as_object()) {
-                let custom: Vec<_> = annotations
-                    .iter()
-                    .filter(|(k, _)| !k.starts_with("backstage.io/"))
-                    .collect();
-                if !custom.is_empty() {
-                    println!("\n  {}", "Annotations:".dimmed());
-                    for (k, v) in custom {
-                        println!(
-                            "    {} {}",
-                            format!("{k}:").dimmed(),
-                            v.as_str().unwrap_or("")
-                        );
-                    }
-                }
-            }
-
-            if let Some(tags) = metadata.get("tags").and_then(|v| v.as_array())
-                && !tags.is_empty()
-            {
-                let tag_strs: Vec<&str> = tags.iter().filter_map(|t| t.as_str()).collect();
-                println!("\n  {} {}", "Tags:".dimmed(), tag_strs.join(", "));
-            }
-
-            if let Some(relations) = entity.get("relations").and_then(|v| v.as_array())
-                && !relations.is_empty()
-            {
-                println!("\n  {}", "Relations:".dimmed());
-                for rel in relations {
-                    let rel_type = rel.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                    let target = rel.get("targetRef").and_then(|v| v.as_str()).unwrap_or("");
-                    println!("    {} {}", format!("{rel_type}:").dimmed(), target);
-                }
-            }
-            println!();
-        }
+        "json" => println!("{}", serde_json::to_string_pretty(&entity)?),
+        _ => print_entity_detail(&entity),
     }
     Ok(())
 }
 
+fn print_entity_detail(entity: &serde_json::Value) {
+    let metadata = entity.get("metadata").cloned().unwrap_or_default();
+    let spec = entity.get("spec").cloned().unwrap_or_default();
+
+    let kind_str = entity.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+    let name_str = metadata.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let desc = metadata
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    println!("\n{} {}", format!("{kind_str}:").dimmed(), name_str.bold());
+    if !desc.is_empty() {
+        println!("{}", desc.dimmed());
+    }
+
+    let mut fields = Vec::new();
+    for key in &["type", "lifecycle", "owner", "system"] {
+        if let Some(v) = spec.get(*key).and_then(|v| v.as_str()) {
+            let label = key[..1].to_uppercase() + &key[1..];
+            fields.push((label, v.to_string()));
+        }
+    }
+    if !fields.is_empty() {
+        println!();
+        for (label, value) in &fields {
+            println!("  {:<12} {}", format!("{label}:").dimmed(), value);
+        }
+    }
+
+    if let Some(annotations) = metadata.get("annotations").and_then(|v| v.as_object()) {
+        let custom: Vec<_> = annotations
+            .iter()
+            .filter(|(k, _)| !k.starts_with("backstage.io/"))
+            .collect();
+        if !custom.is_empty() {
+            println!("\n  {}", "Annotations:".dimmed());
+            for (k, v) in custom {
+                println!(
+                    "    {} {}",
+                    format!("{k}:").dimmed(),
+                    v.as_str().unwrap_or("")
+                );
+            }
+        }
+    }
+
+    if let Some(tags) = metadata.get("tags").and_then(|v| v.as_array())
+        && !tags.is_empty()
+    {
+        let tag_strs: Vec<&str> = tags.iter().filter_map(|t| t.as_str()).collect();
+        println!("\n  {} {}", "Tags:".dimmed(), tag_strs.join(", "));
+    }
+
+    if let Some(relations) = entity.get("relations").and_then(|v| v.as_array())
+        && !relations.is_empty()
+    {
+        println!("\n  {}", "Relations:".dimmed());
+        for rel in relations {
+            let rel_type = rel.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            let target = rel.get("targetRef").and_then(|v| v.as_str()).unwrap_or("");
+            println!("    {} {}", format!("{rel_type}:").dimmed(), target);
+        }
+    }
+    println!();
+}
+
 async fn facets(client: &BackstageClient, field: &str) -> Result<()> {
-    let path = format!(
-        "/api/catalog/entity-facets?facet={}",
-        urlencoding::encode(field)
-    );
-    let resp: serde_json::Value = client.get(&path).await?;
+    let resp = service::catalog_facets(client, field).await?;
 
     if let Some(facets) = resp
         .get("facets")
@@ -431,11 +392,7 @@ async fn facets(client: &BackstageClient, field: &str) -> Result<()> {
 }
 
 async fn register(client: &BackstageClient, target: &str) -> Result<()> {
-    let body = serde_json::json!({
-        "type": "url",
-        "target": target,
-    });
-    let resp: serde_json::Value = client.post("/api/catalog/locations", &body).await?;
+    let resp = service::catalog_register(client, target).await?;
 
     if let Some(location) = resp.get("location") {
         let loc_target = location
@@ -459,92 +416,22 @@ async fn register(client: &BackstageClient, target: &str) -> Result<()> {
 }
 
 async fn unregister(client: &BackstageClient, entity_ref: &str) -> Result<()> {
-    let (kind, namespace, name) = parse_entity_ref(entity_ref)?;
-    let path = format!("/api/catalog/entities/by-name/{kind}/{namespace}/{name}");
-    let entity: serde_json::Value = client.get(&path).await?;
-
-    // Find the location that registered this entity
-    let location = entity
-        .get("metadata")
-        .and_then(|m| m.get("annotations"))
-        .and_then(|a| a.get("backstage.io/managed-by-location"))
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("Entity has no managed-by-location annotation"))?;
-
-    // Find location ID
-    let locations: Vec<serde_json::Value> = client.get("/api/catalog/locations").await?;
-    let location_entry = locations.iter().find(|l| {
-        l.get("data")
-            .and_then(|d| d.get("target"))
-            .and_then(|v| v.as_str())
-            .is_some_and(|t| location.ends_with(t))
-    });
-
-    if let Some(entry) = location_entry
-        && let Some(id) = entry
-            .get("data")
-            .and_then(|d| d.get("id"))
-            .and_then(|v| v.as_str())
-    {
-        let delete_path = format!("/api/catalog/locations/{id}");
-        client.delete_raw(&delete_path).await?;
-        println!("{} {kind}:{namespace}/{name}", "Unregistered:".green());
-        return Ok(());
-    }
-
-    anyhow::bail!("Could not find location for {entity_ref}. Location: {location}");
-}
-
-async fn refresh(client: &BackstageClient, entity_ref: &str) -> Result<()> {
-    let (kind, namespace, name) = parse_entity_ref(entity_ref)?;
-    let body = serde_json::json!({ "entityRef": format!("{kind}:{namespace}/{name}") });
-    let _: serde_json::Value = client.post("/api/catalog/refresh", &body).await?;
-    println!("{} {kind}:{namespace}/{name}", "Refreshed".green());
+    let ref_str = service::catalog_unregister(client, entity_ref).await?;
+    println!("{} {ref_str}", "Unregistered:".green());
     Ok(())
 }
 
-/// Parse entity reference like "component:default/my-service" or "component:my-service"
-pub fn parse_entity_ref(entity_ref: &str) -> Result<(String, String, String)> {
-    let (kind, rest) = entity_ref.split_once(':').ok_or_else(|| {
-        anyhow::anyhow!(
-            "Invalid entity reference '{entity_ref}'. Expected format: kind:namespace/name or kind:name"
-        )
-    })?;
-
-    let (namespace, name) = if let Some((ns, n)) = rest.split_once('/') {
-        (ns.to_string(), n.to_string())
-    } else {
-        ("default".to_string(), rest.to_string())
-    };
-
-    Ok((kind.to_lowercase(), namespace, name))
+async fn refresh(client: &BackstageClient, entity_ref: &str) -> Result<()> {
+    service::catalog_refresh(client, entity_ref).await?;
+    println!("{} {entity_ref}", "Refreshed".green());
+    Ok(())
 }
+
+// Re-export for backward compatibility (used by columns command)
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_entity_ref_full() {
-        let (kind, ns, name) = parse_entity_ref("Component:custom-ns/my-service").unwrap();
-        assert_eq!(kind, "component");
-        assert_eq!(ns, "custom-ns");
-        assert_eq!(name, "my-service");
-    }
-
-    #[test]
-    fn parse_entity_ref_default_namespace() {
-        let (kind, ns, name) = parse_entity_ref("API:my-api").unwrap();
-        assert_eq!(kind, "api");
-        assert_eq!(ns, "default");
-        assert_eq!(name, "my-api");
-    }
-
-    #[test]
-    fn parse_entity_ref_missing_kind() {
-        let result = parse_entity_ref("just-a-name");
-        assert!(result.is_err());
-    }
 
     #[test]
     fn test_extract_jsonpath() {
@@ -553,7 +440,7 @@ mod tests {
             "spec": {"type": "service", "owner": "team-a"}
         });
         assert_eq!(extract_jsonpath(&entity, "metadata.name"), "test");
-        assert_eq!(extract_jsonpath(&entity, "spec.owner"), "team-a");
+        assert_eq!(extract_jsonpath(&entity, "$.spec.owner"), "team-a");
         assert_eq!(extract_jsonpath(&entity, "spec.missing"), "");
     }
 }

@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use crate::client::BackstageClient;
 use crate::plugin::PluginConfig;
+use crate::service;
 
 #[derive(Clone)]
 pub struct BsctlMcp {
@@ -16,101 +17,77 @@ pub struct BsctlMcp {
     tool_router: ToolRouter<Self>,
 }
 
-// -- Tool parameter types --
-
 #[derive(Deserialize, JsonSchema)]
 pub struct CatalogListParams {
-    /// Filter by entity kind (e.g. Component, Resource, API)
     #[serde(default)]
     pub kind: Option<String>,
-    /// Filter by spec.type (e.g. tenant, client-account, service)
     #[serde(default, rename = "type")]
     pub entity_type: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
-pub struct CatalogGetParams {
-    /// Entity reference (e.g. component:default/my-service, resource:client-tc3)
+pub struct EntityRefParams {
+    /// Entity reference (e.g. component:default/my-service)
     pub entity_ref: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
 pub struct SearchParams {
-    /// Search term
     pub term: String,
-    /// Max results (default 25)
     #[serde(default = "default_limit")]
     pub limit: u32,
 }
-
 fn default_limit() -> u32 {
     25
 }
 
 #[derive(Deserialize, JsonSchema)]
 pub struct TemplateRunParams {
-    /// Template name (e.g. tenant-creation)
     pub name: String,
-    /// Template namespace (default: default)
-    #[serde(default = "default_namespace")]
+    #[serde(default = "default_ns")]
     pub namespace: String,
-    /// Template parameters as key-value pairs
     #[serde(default)]
     pub values: serde_json::Map<String, serde_json::Value>,
 }
 
-fn default_namespace() -> String {
+#[derive(Deserialize, JsonSchema)]
+pub struct TemplateNameParams {
+    pub name: String,
+    #[serde(default = "default_ns")]
+    pub namespace: String,
+}
+fn default_ns() -> String {
     "default".to_string()
 }
 
 #[derive(Deserialize, JsonSchema)]
-pub struct TaskStatusParams {
-    /// Scaffolder task ID
+pub struct TaskIdParams {
     pub task_id: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
-pub struct CatalogRefreshParams {
-    /// Entity reference to refresh (e.g. component:default/my-service)
-    pub entity_ref: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
-pub struct CatalogRegisterParams {
-    /// Location URL to register (e.g. https://github.com/org/repo/blob/main/catalog-info.yaml)
+pub struct RegisterParams {
     pub target: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
-pub struct CatalogFacetsParams {
-    /// Field to get facets for (e.g. kind, spec.type, spec.lifecycle)
+pub struct FacetsParams {
     pub field: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
-pub struct TemplateDescribeParams {
-    /// Template name
-    pub name: String,
-    /// Template namespace (default: default)
-    #[serde(default = "default_namespace")]
-    pub namespace: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
 pub struct PluginCallParams {
-    /// Plugin name (e.g. terraform, lambda, costs)
     pub plugin: String,
-    /// Command name (e.g. prs, status, get)
     pub command: String,
-    /// Positional arguments
     #[serde(default)]
     pub args: Vec<String>,
-    /// Named parameters as key-value pairs
     #[serde(default)]
     pub params: std::collections::HashMap<String, String>,
 }
 
-// -- Tool implementations --
+fn to_json(v: &impl serde::Serialize) -> Result<String, String> {
+    serde_json::to_string_pretty(v).map_err(|e| e.to_string())
+}
 
 #[tool_router]
 impl BsctlMcp {
@@ -122,481 +99,305 @@ impl BsctlMcp {
         }
     }
 
-    /// List entities in the Backstage catalog, optionally filtered by kind and type.
-    /// When custom columns are defined for the type in .bsctl/columns/, returns
-    /// a compact summary with extracted fields instead of full entities.
     #[tool(
         name = "catalog_list",
-        description = "List entities in the Backstage catalog. Returns compact summary when custom columns are configured for the type."
+        description = "List entities in the Backstage catalog"
     )]
     async fn catalog_list(&self, params: Parameters<CatalogListParams>) -> Result<String, String> {
         let p = params.0;
-        let mut filters = Vec::new();
-        if let Some(kind) = &p.kind {
-            filters.push(format!("kind={kind}"));
-        }
-        if let Some(t) = &p.entity_type {
-            filters.push(format!("spec.type={t}"));
-        }
-        let query = if filters.is_empty() {
-            String::new()
-        } else {
-            format!("?filter={}", filters.join(","))
-        };
-        let entities: Vec<serde_json::Value> = match self
-            .client
-            .get(&format!("/api/catalog/entities{query}"))
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => return Err(e.to_string()),
-        };
-
-        // If custom columns are defined for this type, extract a compact summary
-        let custom_columns = p
+        let entities = service::catalog_list(
+            &self.client,
+            p.kind.as_deref(),
+            p.entity_type.as_deref(),
+            None,
+            None,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        if let Some(columns) = p
             .entity_type
             .as_ref()
-            .and_then(|t| self.plugin_config.columns.get(t));
-
-        if let Some(columns) = custom_columns {
+            .and_then(|t| self.plugin_config.columns.get(t))
+        {
             let summary: Vec<serde_json::Value> = entities
                 .iter()
                 .map(|e| {
                     let mut obj = serde_json::Map::new();
-                    // Always include name
-                    if let Some(name) = e
+                    if let Some(n) = e
                         .get("metadata")
                         .and_then(|m| m.get("name"))
                         .and_then(|v| v.as_str())
                     {
-                        obj.insert("name".into(), name.into());
+                        obj.insert("name".into(), n.into());
                     }
-                    // Extract custom column values
                     for col in columns {
-                        let key = col.header.to_lowercase().replace(' ', "_");
-                        let value = col.extract(e);
-                        if !value.is_empty() {
-                            obj.insert(key, value.into());
+                        let k = col.header.to_lowercase().replace(' ', "_");
+                        let v = col.extract(e);
+                        if !v.is_empty() {
+                            obj.insert(k, v.into());
                         }
                     }
                     serde_json::Value::Object(obj)
                 })
                 .collect();
-            Ok(serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?)
+            to_json(&summary)
         } else {
-            Ok(serde_json::to_string_pretty(&entities).map_err(|e| e.to_string())?)
+            to_json(&entities)
         }
     }
 
-    /// Get details of a specific entity by its reference
     #[tool(
         name = "catalog_get",
-        description = "Get a specific entity from the Backstage catalog"
+        description = "Get a specific entity from the catalog"
     )]
-    async fn catalog_get(&self, params: Parameters<CatalogGetParams>) -> Result<String, String> {
-        let (kind, namespace, name) = match parse_ref(&params.0.entity_ref) {
-            Ok(v) => v,
-            Err(e) => return Err(e.to_string()),
-        };
-        let path = format!("/api/catalog/entities/by-name/{kind}/{namespace}/{name}");
-        match self.client.get::<serde_json::Value>(&path).await {
-            Ok(v) => Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
-            Err(e) => Err(e.to_string()),
-        }
+    async fn catalog_get(&self, params: Parameters<EntityRefParams>) -> Result<String, String> {
+        to_json(
+            &service::catalog_get(&self.client, &params.0.entity_ref)
+                .await
+                .map_err(|e| e.to_string())?,
+        )
     }
 
-    /// Refresh a catalog entity to re-read its source
-    #[tool(
-        name = "catalog_refresh",
-        description = "Refresh a catalog entity to re-read from its source"
-    )]
-    async fn catalog_refresh(
-        &self,
-        params: Parameters<CatalogRefreshParams>,
-    ) -> Result<String, String> {
-        let (kind, namespace, name) = match parse_ref(&params.0.entity_ref) {
-            Ok(v) => v,
-            Err(e) => return Err(e.to_string()),
-        };
-        let body = serde_json::json!({ "entityRef": format!("{kind}:{namespace}/{name}") });
-        match self
-            .client
-            .post::<serde_json::Value>("/api/catalog/refresh", &body)
+    #[tool(name = "catalog_refresh", description = "Refresh a catalog entity")]
+    async fn catalog_refresh(&self, params: Parameters<EntityRefParams>) -> Result<String, String> {
+        service::catalog_refresh(&self.client, &params.0.entity_ref)
             .await
-        {
-            Ok(_) => Ok(format!("Refreshed {kind}:{namespace}/{name}")),
-            Err(e) => Err(e.to_string()),
-        }
+            .map_err(|e| e.to_string())?;
+        Ok(format!("Refreshed {}", params.0.entity_ref))
     }
 
-    /// Search the Backstage catalog
-    #[tool(name = "search", description = "Search the Backstage catalog by term")]
+    #[tool(
+        name = "catalog_register",
+        description = "Register a new entity location"
+    )]
+    async fn catalog_register(&self, params: Parameters<RegisterParams>) -> Result<String, String> {
+        to_json(
+            &service::catalog_register(&self.client, &params.0.target)
+                .await
+                .map_err(|e| e.to_string())?,
+        )
+    }
+
+    #[tool(
+        name = "catalog_unregister",
+        description = "Unregister an entity from the catalog"
+    )]
+    async fn catalog_unregister(
+        &self,
+        params: Parameters<EntityRefParams>,
+    ) -> Result<String, String> {
+        let r = service::catalog_unregister(&self.client, &params.0.entity_ref)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(format!("Unregistered {r}"))
+    }
+
+    #[tool(
+        name = "catalog_facets",
+        description = "List unique values for a catalog field"
+    )]
+    async fn catalog_facets(&self, params: Parameters<FacetsParams>) -> Result<String, String> {
+        to_json(
+            &service::catalog_facets(&self.client, &params.0.field)
+                .await
+                .map_err(|e| e.to_string())?,
+        )
+    }
+
+    #[tool(name = "search", description = "Search the Backstage catalog")]
     async fn search(&self, params: Parameters<SearchParams>) -> Result<String, String> {
         let p = params.0;
-        let path = format!(
-            "/api/search/query?term={}&limit={}",
-            urlencoding::encode(&p.term),
-            p.limit
-        );
-        match self.client.get::<serde_json::Value>(&path).await {
-            Ok(v) => Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
-            Err(e) => Err(e.to_string()),
-        }
+        to_json(
+            &service::search(&self.client, &p.term, None, p.limit)
+                .await
+                .map_err(|e| e.to_string())?,
+        )
     }
 
-    /// List available software templates
     #[tool(
         name = "template_list",
-        description = "List available software templates in Backstage"
+        description = "List available software templates"
     )]
     async fn template_list(&self) -> Result<String, String> {
-        match self
-            .client
-            .get::<serde_json::Value>("/api/catalog/entities?filter=kind=Template")
+        let t = service::template_list(&self.client)
             .await
-        {
-            Ok(v) => {
-                if let Some(arr) = v.as_array() {
-                    let summary: Vec<serde_json::Value> = arr
-                        .iter()
-                        .map(|t| {
-                            serde_json::json!({
-                                "name": t.get("metadata").and_then(|m| m.get("name")),
-                                "title": t.get("metadata").and_then(|m| m.get("title")),
-                                "description": t.get("metadata").and_then(|m| m.get("description")),
-                            })
-                        })
-                        .collect();
-                    Ok(serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?)
-                } else {
-                    Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?)
-                }
-            }
-            Err(e) => Err(e.to_string()),
-        }
+            .map_err(|e| e.to_string())?;
+        let summary: Vec<serde_json::Value> = t
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.get("metadata").and_then(|m| m.get("name")),
+                    "title": t.get("metadata").and_then(|m| m.get("title")),
+                    "description": t.get("metadata").and_then(|m| m.get("description")),
+                })
+            })
+            .collect();
+        to_json(&summary)
     }
 
-    /// Run a software template to create infrastructure or resources
+    #[tool(
+        name = "template_describe",
+        description = "Show parameter schema for a template"
+    )]
+    async fn template_describe(
+        &self,
+        params: Parameters<TemplateNameParams>,
+    ) -> Result<String, String> {
+        let p = params.0;
+        let e = service::template_describe(&self.client, &p.name, &p.namespace)
+            .await
+            .map_err(|e| e.to_string())?;
+        let spec = e.get("spec").cloned().unwrap_or_default();
+        to_json(&serde_json::json!({
+            "name": e.get("metadata").and_then(|m| m.get("name")),
+            "title": e.get("metadata").and_then(|m| m.get("title")),
+            "parameters": spec.get("parameters"),
+            "steps": spec.get("steps").and_then(|s| s.as_array()).map(|steps| steps.iter().map(|s| serde_json::json!({"id": s.get("id"), "name": s.get("name"), "action": s.get("action")})).collect::<Vec<_>>()),
+        }))
+    }
+
     #[tool(
         name = "template_run",
         description = "Run a Backstage software template"
     )]
     async fn template_run(&self, params: Parameters<TemplateRunParams>) -> Result<String, String> {
         let p = params.0;
-        let body = serde_json::json!({
-            "templateRef": format!("template:{}/{}", p.namespace, p.name),
-            "values": p.values,
-        });
-        match self
-            .client
-            .post::<serde_json::Value>("/api/scaffolder/v2/tasks", &body)
-            .await
-        {
-            Ok(v) => Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
-            Err(e) => Err(e.to_string()),
-        }
-    }
-
-    /// Check the status of a running template task
-    #[tool(
-        name = "template_status",
-        description = "Check status of a Backstage scaffolder task"
-    )]
-    async fn template_status(
-        &self,
-        params: Parameters<TaskStatusParams>,
-    ) -> Result<String, String> {
-        let path = format!(
-            "/api/scaffolder/v2/tasks/{}",
-            urlencoding::encode(&params.0.task_id)
-        );
-        match self.client.get::<serde_json::Value>(&path).await {
-            Ok(v) => Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
-            Err(e) => Err(e.to_string()),
-        }
-    }
-
-    /// Authenticate with Backstage using guest provider (no browser required)
-    #[tool(
-        name = "login",
-        description = "Authenticate with Backstage using guest auth. Call this first if other tools return 401 errors."
-    )]
-    async fn login(&self) -> Result<String, String> {
-        let base_url = self.client.base_url();
-        let url = format!("{base_url}/api/auth/guest/refresh");
-        let resp = match reqwest::Client::new().get(&url).send().await {
-            Ok(r) => r,
-            Err(e) => return Err(format!("Failed to reach auth endpoint: {e}")),
-        };
-        if !resp.status().is_success() {
-            return Err(format!(
-                "Guest auth failed ({}). Is guest provider enabled?",
-                resp.status()
-            ));
-        }
-        let body: serde_json::Value = match resp.json().await {
-            Ok(v) => v,
-            Err(e) => return Err(format!("Failed to parse auth response: {e}")),
-        };
-        let token = match body
-            .get("backstageIdentity")
-            .and_then(|bi| bi.get("token"))
-            .and_then(|t| t.as_str())
-        {
-            Some(t) => t.to_string(),
-            None => return Err("No token in guest auth response".to_string()),
-        };
-        self.client.set_token(token);
-        Ok("Login successful. Guest token is now active.".to_string())
-    }
-
-    /// Register a new entity location in the catalog
-    #[tool(
-        name = "catalog_register",
-        description = "Register a new entity location in the Backstage catalog"
-    )]
-    async fn catalog_register(
-        &self,
-        params: Parameters<CatalogRegisterParams>,
-    ) -> Result<String, String> {
-        let body = serde_json::json!({
-            "type": "url",
-            "target": params.0.target,
-        });
-        match self
-            .client
-            .post::<serde_json::Value>("/api/catalog/locations", &body)
-            .await
-        {
-            Ok(v) => Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
-            Err(e) => Err(e.to_string()),
-        }
-    }
-
-    /// List unique values for a catalog field (e.g. kind, spec.type)
-    #[tool(
-        name = "catalog_facets",
-        description = "List unique values for a catalog field (e.g. kind, spec.type, spec.lifecycle)"
-    )]
-    async fn catalog_facets(
-        &self,
-        params: Parameters<CatalogFacetsParams>,
-    ) -> Result<String, String> {
-        let path = format!(
-            "/api/catalog/entity-facets?facet={}",
-            urlencoding::encode(&params.0.field)
-        );
-        match self.client.get::<serde_json::Value>(&path).await {
-            Ok(v) => Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
-            Err(e) => Err(e.to_string()),
-        }
-    }
-
-    /// Show template parameter schema and steps
-    #[tool(
-        name = "template_describe",
-        description = "Show details and parameter schema for a Backstage software template"
-    )]
-    async fn template_describe(
-        &self,
-        params: Parameters<TemplateDescribeParams>,
-    ) -> Result<String, String> {
-        let p = params.0;
-        let path = format!(
-            "/api/catalog/entities/by-name/template/{}/{}",
-            p.namespace, p.name
-        );
-        match self.client.get::<serde_json::Value>(&path).await {
-            Ok(entity) => {
-                // Extract just spec.parameters and spec.steps for conciseness
-                let spec = entity.get("spec").cloned().unwrap_or_default();
-                let summary = serde_json::json!({
-                    "name": entity.get("metadata").and_then(|m| m.get("name")),
-                    "title": entity.get("metadata").and_then(|m| m.get("title")),
-                    "description": entity.get("metadata").and_then(|m| m.get("description")),
-                    "parameters": spec.get("parameters"),
-                    "steps": spec.get("steps").and_then(|s| s.as_array()).map(|steps| {
-                        steps.iter().map(|s| serde_json::json!({
-                            "id": s.get("id"),
-                            "name": s.get("name"),
-                            "action": s.get("action"),
-                        })).collect::<Vec<_>>()
-                    }),
-                });
-                Ok(serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?)
-            }
-            Err(e) => Err(e.to_string()),
-        }
-    }
-
-    /// Unregister an entity by removing its location
-    #[tool(
-        name = "catalog_unregister",
-        description = "Unregister an entity from the Backstage catalog by removing its location"
-    )]
-    async fn catalog_unregister(
-        &self,
-        params: Parameters<CatalogRefreshParams>,
-    ) -> Result<String, String> {
-        let (kind, namespace, name) = parse_ref(&params.0.entity_ref).map_err(|e| e.to_string())?;
-        let path = format!("/api/catalog/entities/by-name/{kind}/{namespace}/{name}");
-        let entity: serde_json::Value = self.client.get(&path).await.map_err(|e| e.to_string())?;
-
-        let location = entity
-            .get("metadata")
-            .and_then(|m| m.get("annotations"))
-            .and_then(|a| a.get("backstage.io/managed-by-location"))
-            .and_then(|v| v.as_str())
-            .ok_or("Entity has no managed-by-location annotation")?;
-
-        let locations: Vec<serde_json::Value> = self
-            .client
-            .get("/api/catalog/locations")
+        let id = service::template_run(&self.client, &p.name, &p.namespace, p.values)
             .await
             .map_err(|e| e.to_string())?;
-
-        let location_entry = locations.iter().find(|l| {
-            l.get("data")
-                .and_then(|d| d.get("target"))
-                .and_then(|v| v.as_str())
-                .is_some_and(|t| location.ends_with(t))
-        });
-
-        if let Some(entry) = location_entry
-            && let Some(id) = entry
-                .get("data")
-                .and_then(|d| d.get("id"))
-                .and_then(|v| v.as_str())
-        {
-            let delete_path = format!("/api/catalog/locations/{id}");
-            self.client
-                .delete_raw(&delete_path)
-                .await
-                .map_err(|e| e.to_string())?;
-            return Ok(format!("Unregistered {kind}:{namespace}/{name}"));
-        }
-
-        Err(format!(
-            "Could not find location for entity. Location: {location}"
-        ))
+        Ok(serde_json::json!({"task_id": id}).to_string())
     }
 
-    /// Cancel a running scaffolder task
+    #[tool(
+        name = "template_status",
+        description = "Check status of a scaffolder task"
+    )]
+    async fn template_status(&self, params: Parameters<TaskIdParams>) -> Result<String, String> {
+        to_json(
+            &service::template_status(&self.client, &params.0.task_id)
+                .await
+                .map_err(|e| e.to_string())?,
+        )
+    }
+
     #[tool(
         name = "template_cancel",
-        description = "Cancel a running Backstage scaffolder task"
+        description = "Cancel a running scaffolder task"
     )]
-    async fn template_cancel(
-        &self,
-        params: Parameters<TaskStatusParams>,
-    ) -> Result<String, String> {
-        let path = format!(
-            "/api/scaffolder/v2/tasks/{}/cancel",
-            urlencoding::encode(&params.0.task_id)
-        );
-        let body = serde_json::json!({});
-        self.client
-            .post::<serde_json::Value>(&path, &body)
+    async fn template_cancel(&self, params: Parameters<TaskIdParams>) -> Result<String, String> {
+        service::template_cancel(&self.client, &params.0.task_id)
             .await
             .map_err(|e| e.to_string())?;
         Ok(format!("Cancelled task {}", params.0.task_id))
     }
 
-    /// Call a custom plugin command defined in .bsctl/plugins.yaml
+    #[tool(
+        name = "login",
+        description = "Authenticate with Backstage using guest auth"
+    )]
+    async fn login(&self) -> Result<String, String> {
+        let url = format!("{}/api/auth/guest/refresh", self.client.base_url());
+        let resp = reqwest::Client::new()
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("Auth failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Guest auth failed ({})", resp.status()));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Parse failed: {e}"))?;
+        let token = body
+            .get("backstageIdentity")
+            .and_then(|b| b.get("token"))
+            .and_then(|t| t.as_str())
+            .ok_or("No token in response")?;
+        self.client.set_token(token.to_string());
+        Ok("Login successful. Guest token is now active.".to_string())
+    }
+
     #[tool(
         name = "plugin_call",
-        description = "Call a custom plugin command (e.g. terraform prs, costs get). See .bsctl/plugins.yaml for available commands."
+        description = "Call a custom plugin command from .bsctl/plugins.yaml"
     )]
     async fn plugin_call(&self, params: Parameters<PluginCallParams>) -> Result<String, String> {
         let p = params.0;
         let named: Vec<(String, String)> = p.params.into_iter().collect();
-
-        // Capture stdout by running the plugin logic and formatting result
         let commands = self
             .plugin_config
             .plugins
             .get(&p.plugin)
             .ok_or_else(|| format!("Unknown plugin: {}", p.plugin))?;
-
         let cmd = commands
             .get(&p.command)
             .ok_or_else(|| format!("Unknown command: {} {}", p.plugin, p.command))?;
 
-        // Build path with arg substitution
         let mut path = cmd.path.clone();
-        for arg_def in &cmd.args {
-            let idx = arg_def.position - 1;
-            let value = p
+        for ad in &cmd.args {
+            let v = p
                 .args
-                .get(idx)
-                .ok_or_else(|| format!("Missing required argument: {}", arg_def.name))?;
-            let encoded = urlencoding::encode(value);
-            path = path.replace(&format!("{{{}}}", arg_def.name), &encoded);
+                .get(ad.position - 1)
+                .ok_or_else(|| format!("Missing argument: {}", ad.name))?;
+            path = path.replace(&format!("{{{}}}", ad.name), &urlencoding::encode(v));
         }
-
-        // Build query params
-        let mut query_parts = Vec::new();
-        for param_def in &cmd.params {
-            let value = named
-                .iter()
-                .find(|(k, _)| k == &param_def.name)
-                .map(|(_, v)| v);
-            if value.is_none() && param_def.required.unwrap_or(false) {
-                return Err(format!("Missing required parameter: {}", param_def.name));
+        let mut qp = Vec::new();
+        for pd in &cmd.params {
+            let v = named.iter().find(|(k, _)| k == &pd.name).map(|(_, v)| v);
+            if v.is_none() && pd.required.unwrap_or(false) {
+                return Err(format!("Missing parameter: {}", pd.name));
             }
-            if let Some(val) = value
-                && let Some(query_key) = &param_def.query
-            {
-                query_parts.push(format!(
-                    "{}={}",
-                    urlencoding::encode(query_key),
-                    urlencoding::encode(val)
-                ));
-            }
+            if let Some(val) = v
+                && let Some(qk) = &pd.query {
+                    qp.push(format!(
+                        "{}={}",
+                        urlencoding::encode(qk),
+                        urlencoding::encode(val)
+                    ));
+                }
         }
-        if !query_parts.is_empty() {
+        if !qp.is_empty() {
             let sep = if path.contains('?') { "&" } else { "?" };
-            path = format!("{path}{sep}{}", query_parts.join("&"));
+            path = format!("{path}{sep}{}", qp.join("&"));
         }
 
         match &cmd.method {
-            crate::plugin::Method::Get => match self.client.get::<serde_json::Value>(&path).await {
-                Ok(v) => Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
-                Err(e) => Err(e.to_string()),
-            },
-            crate::plugin::Method::Delete => match self.client.delete_raw(&path).await {
-                Ok(text) => Ok(if text.is_empty() {
-                    "OK".to_string()
-                } else {
-                    text
-                }),
-                Err(e) => Err(e.to_string()),
-            },
+            crate::plugin::Method::Get => to_json(
+                &self
+                    .client
+                    .get::<serde_json::Value>(&path)
+                    .await
+                    .map_err(|e| e.to_string())?,
+            ),
+            crate::plugin::Method::Delete => {
+                let t = self
+                    .client
+                    .delete_raw(&path)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(if t.is_empty() { "OK".into() } else { t })
+            }
             method => {
-                let mut body_map = serde_json::Map::new();
-                for param_def in &cmd.params {
-                    if let Some(body_key) = &param_def.body
-                        && let Some(val) = named
-                            .iter()
-                            .find(|(k, _)| k == &param_def.name)
-                            .map(|(_, v)| v)
-                    {
-                        let json_val = serde_json::from_str(val)
-                            .unwrap_or_else(|_| serde_json::Value::String(val.to_string()));
-                        body_map.insert(body_key.to_string(), json_val);
-                    }
+                let mut bm = serde_json::Map::new();
+                for pd in &cmd.params {
+                    if let Some(bk) = &pd.body
+                        && let Some(val) = named.iter().find(|(k, _)| k == &pd.name).map(|(_, v)| v)
+                        {
+                            bm.insert(
+                                bk.to_string(),
+                                serde_json::from_str(val)
+                                    .unwrap_or_else(|_| serde_json::Value::String(val.to_string())),
+                            );
+                        }
                 }
-                let body = serde_json::Value::Object(body_map);
-                let result = match method {
-                    crate::plugin::Method::Put => {
-                        self.client.put::<serde_json::Value>(&path, &body).await
-                    }
-                    _ => self.client.post::<serde_json::Value>(&path, &body).await,
-                };
-                match result {
-                    Ok(v) => Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
-                    Err(e) => Err(e.to_string()),
+                let body = serde_json::Value::Object(bm);
+                let r: serde_json::Value = match method {
+                    crate::plugin::Method::Put => self.client.put(&path, &body).await,
+                    _ => self.client.post(&path, &body).await,
                 }
+                .map_err(|e| e.to_string())?;
+                to_json(&r)
             }
         }
     }
@@ -605,16 +406,10 @@ impl BsctlMcp {
 #[tool_handler]
 impl ServerHandler for BsctlMcp {}
 
-fn parse_ref(entity_ref: &str) -> anyhow::Result<(String, String, String)> {
-    crate::commands::catalog::parse_entity_ref(entity_ref)
-}
-
-/// Start the MCP server on stdio
 pub async fn serve(client: BackstageClient) -> anyhow::Result<()> {
     let plugin_config = PluginConfig::load()?;
     let server = BsctlMcp::new(client, plugin_config);
-    let transport = transport::io::stdio();
-    let service = server.serve(transport).await?;
+    let service = server.serve(transport::io::stdio()).await?;
     service.waiting().await?;
     Ok(())
 }

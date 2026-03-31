@@ -4,31 +4,20 @@ use serde::Deserialize;
 
 use crate::client::BackstageClient;
 use crate::display::{self, Cell, Style};
+use crate::service;
 
 #[derive(Subcommand)]
 pub enum SearchCommand {
     /// Search the Backstage catalog
     Query {
-        /// Search term
         term: String,
-
-        /// Filter by entity type (e.g. software-catalog)
         #[arg(long, short = 't')]
         r#type: Option<String>,
-
-        /// Max results
         #[arg(long, default_value = "25")]
         limit: u32,
-
-        /// Output format
         #[arg(long, short, default_value = "table")]
         output: String,
     },
-}
-
-#[derive(Deserialize)]
-struct SearchResponse {
-    results: Vec<SearchResult>,
 }
 
 #[derive(Deserialize)]
@@ -43,13 +32,9 @@ struct SearchDocument {
     #[serde(default)]
     title: String,
     #[serde(default)]
-    text: String,
-    #[serde(default)]
     location: String,
     #[serde(default)]
     kind: Option<String>,
-    #[serde(default)]
-    namespace: Option<String>,
 }
 
 pub async fn run(client: &BackstageClient, command: SearchCommand) -> Result<()> {
@@ -59,50 +44,29 @@ pub async fn run(client: &BackstageClient, command: SearchCommand) -> Result<()>
             r#type,
             limit,
             output,
-        } => query(client, &term, r#type, limit, &output).await,
+        } => query(client, &term, r#type.as_deref(), limit, &output).await,
     }
 }
 
 async fn query(
     client: &BackstageClient,
     term: &str,
-    r#type: Option<String>,
+    r#type: Option<&str>,
     limit: u32,
     output: &str,
 ) -> Result<()> {
-    let mut params = vec![
-        format!("term={}", urlencoding::encode(term)),
-        format!("limit={limit}"),
-    ];
-    if let Some(t) = &r#type {
-        params.push(format!("types[0]={}", urlencoding::encode(t)));
-    }
-
-    let path = format!("/api/search/query?{}", params.join("&"));
-    let resp: SearchResponse = client.get(&path).await?;
+    let resp = service::search(client, term, r#type, limit).await?;
 
     match output {
-        "json" => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!(
-                    resp.results
-                        .iter()
-                        .map(|r| serde_json::json!({
-                            "type": r.result_type,
-                            "title": r.document.title,
-                            "text": r.document.text,
-                            "location": r.document.location,
-                            "kind": r.document.kind,
-                            "namespace": r.document.namespace,
-                        }))
-                        .collect::<Vec<_>>()
-                ))?
-            );
-        }
+        "json" => println!("{}", serde_json::to_string_pretty(&resp)?),
         _ => {
-            let rows: Vec<Vec<Cell>> = resp
-                .results
+            let results: Vec<SearchResult> = resp
+                .get("results")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default();
+
+            let rows: Vec<Vec<Cell>> = results
                 .iter()
                 .map(|r| {
                     vec![

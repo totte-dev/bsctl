@@ -5,6 +5,7 @@ mod config;
 mod display;
 mod mcp;
 mod plugin;
+pub mod service;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
