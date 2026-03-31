@@ -1,10 +1,13 @@
 [package]
 name = "bsctl"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "A CLI client and MCP server for Backstage"
 license = "MIT"
 repository = "https://github.com/totte-dev/bsctl"
+homepage = "https://github.com/totte-dev/bsctl"
+documentation = "https://github.com/totte-dev/bsctl/tree/main/docs"
+readme = "README.md"
 keywords = ["backstage", "cli", "mcp", "developer-portal", "catalog"]
 categories = ["command-line-utilities", "development-tools"]
 
