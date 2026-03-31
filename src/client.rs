@@ -59,7 +59,7 @@ impl BackstageClient {
         serde_json::from_str(&body).map_err(|e| {
             anyhow::anyhow!(
                 "Failed to parse response: {e}\nBody: {}",
-                truncate(&body, 500)
+                truncate(&body, 300)
             )
         })
     }
@@ -131,9 +131,13 @@ fn format_api_error(status: reqwest::StatusCode, body: &str) -> String {
         };
     }
     // Fall back to raw body
-    format!("{status}: {}", truncate(body, 500))
+    format!("{status}: {}", truncate(body, 300))
 }
 
-fn truncate(s: &str, max: usize) -> &str {
-    if s.len() > max { &s[..max] } else { s }
+fn truncate(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
+    } else {
+        s.chars().take(max_chars).collect::<String>() + "..."
+    }
 }

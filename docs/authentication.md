@@ -81,3 +81,5 @@ bsctl automatically checks JWT expiry:
 - Tokens from `bsctl login` are stored in credentials, not in config
 
 Environment variable references (`${VAR}`) in config token fields are resolved at load time. Only the exact `${VAR}` syntax is supported — `${VAR:-default}`, nested references, and inline substitution (e.g., `prefix-${VAR}-suffix`) are not supported.
+
+**Security warning**: Never commit raw tokens to config files. Always use `${VAR}` references for tokens in config files that are committed to git. Use `bsctl login` instead, which stores tokens in `~/.config/bsctl/credentials.json` (not in your project directory).
