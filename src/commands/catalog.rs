@@ -156,25 +156,28 @@ async fn list(
     output: &str,
     plugin_config: &crate::plugin::PluginConfig,
 ) -> Result<()> {
-    let mut entities = service::catalog_list(client, kind, r#type, tag, namespace).await?;
-    let total = entities.len();
+    let opts = service::CatalogListOptions {
+        kind,
+        entity_type: r#type,
+        tag,
+        namespace,
+        limit: Some(limit),
+        offset: if offset > 0 { Some(offset) } else { None },
+    };
+    let mut entities = service::catalog_list(client, &opts).await?;
 
-    // Client-side sort
+    // Warn if results may be truncated
+    if entities.len() >= limit {
+        eprintln!(
+            "Showing {limit} entities (limit reached). Use --limit to increase or --offset to paginate."
+        );
+    }
+
+    // Client-side sort (Backstage API doesn't support server-side sorting)
     if let Some(sort_field) = sort {
         entities.sort_by(|a, b| {
             extract_sort_field(a, sort_field).cmp(&extract_sort_field(b, sort_field))
         });
-    }
-
-    // Client-side offset + limit
-    if offset > 0 {
-        entities = entities.into_iter().skip(offset).collect();
-    }
-    if entities.len() > limit {
-        eprintln!(
-            "Showing {limit} of {total} entities. Use --limit to show more, --offset to paginate."
-        );
-        entities.truncate(limit);
     }
 
     // Output

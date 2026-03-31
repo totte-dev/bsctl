@@ -105,15 +105,17 @@ impl BsctlMcp {
     )]
     async fn catalog_list(&self, params: Parameters<CatalogListParams>) -> Result<String, String> {
         let p = params.0;
-        let entities = service::catalog_list(
-            &self.client,
-            p.kind.as_deref(),
-            p.entity_type.as_deref(),
-            None,
-            None,
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+        let opts = service::CatalogListOptions {
+            kind: p.kind.as_deref(),
+            entity_type: p.entity_type.as_deref(),
+            tag: None,
+            namespace: None,
+            limit: Some(500),
+            offset: None,
+        };
+        let entities = service::catalog_list(&self.client, &opts)
+            .await
+            .map_err(|e| e.to_string())?;
         if let Some(columns) = p
             .entity_type
             .as_ref()
@@ -349,13 +351,14 @@ impl BsctlMcp {
                 return Err(format!("Missing parameter: {}", pd.name));
             }
             if let Some(val) = v
-                && let Some(qk) = &pd.query {
-                    qp.push(format!(
-                        "{}={}",
-                        urlencoding::encode(qk),
-                        urlencoding::encode(val)
-                    ));
-                }
+                && let Some(qk) = &pd.query
+            {
+                qp.push(format!(
+                    "{}={}",
+                    urlencoding::encode(qk),
+                    urlencoding::encode(val)
+                ));
+            }
         }
         if !qp.is_empty() {
             let sep = if path.contains('?') { "&" } else { "?" };
@@ -383,13 +386,13 @@ impl BsctlMcp {
                 for pd in &cmd.params {
                     if let Some(bk) = &pd.body
                         && let Some(val) = named.iter().find(|(k, _)| k == &pd.name).map(|(_, v)| v)
-                        {
-                            bm.insert(
-                                bk.to_string(),
-                                serde_json::from_str(val)
-                                    .unwrap_or_else(|_| serde_json::Value::String(val.to_string())),
-                            );
-                        }
+                    {
+                        bm.insert(
+                            bk.to_string(),
+                            serde_json::from_str(val)
+                                .unwrap_or_else(|_| serde_json::Value::String(val.to_string())),
+                        );
+                    }
                 }
                 let body = serde_json::Value::Object(bm);
                 let r: serde_json::Value = match method {

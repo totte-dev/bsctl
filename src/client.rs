@@ -118,18 +118,18 @@ fn format_api_error(status: reqwest::StatusCode, body: &str) -> String {
             .get("error")
             .and_then(|e| e.get("message"))
             .and_then(|m| m.as_str())
-        {
-            let name = json
-                .get("error")
-                .and_then(|e| e.get("name"))
-                .and_then(|n| n.as_str())
-                .unwrap_or("");
-            return if name.is_empty() {
-                format!("{status}: {msg}")
-            } else {
-                format!("{status} ({name}): {msg}")
-            };
-        }
+    {
+        let name = json
+            .get("error")
+            .and_then(|e| e.get("name"))
+            .and_then(|n| n.as_str())
+            .unwrap_or("");
+        return if name.is_empty() {
+            format!("{status}: {msg}")
+        } else {
+            format!("{status} ({name}): {msg}")
+        };
+    }
     // Fall back to raw body
     format!("{status}: {}", truncate(body, 500))
 }

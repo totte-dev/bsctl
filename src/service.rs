@@ -7,31 +7,49 @@ use crate::client::BackstageClient;
 
 // -- Catalog --
 
+pub struct CatalogListOptions<'a> {
+    pub kind: Option<&'a str>,
+    pub entity_type: Option<&'a str>,
+    pub tag: Option<&'a str>,
+    pub namespace: Option<&'a str>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
 pub async fn catalog_list(
     client: &BackstageClient,
-    kind: Option<&str>,
-    entity_type: Option<&str>,
-    tag: Option<&str>,
-    namespace: Option<&str>,
+    opts: &CatalogListOptions<'_>,
 ) -> Result<Vec<serde_json::Value>> {
     let mut filters = Vec::new();
-    if let Some(kind) = kind {
+    if let Some(kind) = opts.kind {
         filters.push(format!("kind={kind}"));
     }
-    if let Some(t) = entity_type {
+    if let Some(t) = opts.entity_type {
         filters.push(format!("spec.type={t}"));
     }
-    if let Some(tag) = tag {
+    if let Some(tag) = opts.tag {
         filters.push(format!("metadata.tags={tag}"));
     }
-    if let Some(ns) = namespace {
+    if let Some(ns) = opts.namespace {
         filters.push(format!("metadata.namespace={ns}"));
     }
 
-    let query = if filters.is_empty() {
+    let mut query_params = Vec::new();
+    if !filters.is_empty() {
+        query_params.push(format!("filter={}", filters.join(",")));
+    }
+    if let Some(limit) = opts.limit {
+        query_params.push(format!("limit={limit}"));
+    }
+    if let Some(offset) = opts.offset
+        && offset > 0 {
+            query_params.push(format!("offset={offset}"));
+        }
+
+    let query = if query_params.is_empty() {
         String::new()
     } else {
-        format!("?filter={}", filters.join(","))
+        format!("?{}", query_params.join("&"))
     };
 
     client.get(&format!("/api/catalog/entities{query}")).await
@@ -83,12 +101,12 @@ pub async fn catalog_unregister(client: &BackstageClient, entity_ref: &str) -> R
             .get("data")
             .and_then(|d| d.get("id"))
             .and_then(|v| v.as_str())
-        {
-            client
-                .delete_raw(&format!("/api/catalog/locations/{id}"))
-                .await?;
-            return Ok(format!("{kind}:{namespace}/{name}"));
-        }
+    {
+        client
+            .delete_raw(&format!("/api/catalog/locations/{id}"))
+            .await?;
+        return Ok(format!("{kind}:{namespace}/{name}"));
+    }
 
     anyhow::bail!("Could not find location for {entity_ref}. Location: {location}");
 }
