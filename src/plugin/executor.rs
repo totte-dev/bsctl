@@ -82,13 +82,14 @@ pub fn build_path(
         }
 
         if let Some(val) = value
-            && let Some(query_key) = &param_def.query {
-                query_parts.push(format!(
-                    "{}={}",
-                    urlencoding::encode(query_key),
-                    urlencoding::encode(val)
-                ));
-            }
+            && let Some(query_key) = &param_def.query
+        {
+            query_parts.push(format!(
+                "{}={}",
+                urlencoding::encode(query_key),
+                urlencoding::encode(val)
+            ));
+        }
     }
 
     if !query_parts.is_empty() {
@@ -107,11 +108,11 @@ pub fn build_body(cmd: &CommandDef, named_params: &[(String, String)]) -> serde_
                 .iter()
                 .find(|(k, _)| k == &param_def.name)
                 .map(|(_, v)| v)
-            {
-                let json_val = serde_json::from_str(val)
-                    .unwrap_or_else(|_| serde_json::Value::String(val.to_string()));
-                body_map.insert(body_key.to_string(), json_val);
-            }
+        {
+            let json_val = serde_json::from_str(val)
+                .unwrap_or_else(|_| serde_json::Value::String(val.to_string()));
+            body_map.insert(body_key.to_string(), json_val);
+        }
     }
     serde_json::Value::Object(body_map)
 }
