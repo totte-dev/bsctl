@@ -10,7 +10,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "bsctl", about = "A CLI client for Backstage")]
+#[command(name = "bsctl", version, about = "A CLI client for Backstage")]
 struct Cli {
     /// Backstage base URL (overrides config)
     #[arg(long, env = "BSCTL_BASE_URL")]
@@ -63,6 +63,13 @@ enum Commands {
         #[command(subcommand)]
         command: commands::config_cmd::ConfigCommand,
     },
+    /// Show version information
+    Version,
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        shell: clap_complete::Shell,
+    },
     /// List available plugin commands from .bsctl.yaml
     Plugins,
     /// Run a plugin command defined in .bsctl.yaml
@@ -76,6 +83,19 @@ async fn main() -> Result<()> {
 
     // Commands that don't need an API client
     match &cli.command {
+        Commands::Version => {
+            println!("bsctl {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Commands::Completions { shell } => {
+            clap_complete::generate(
+                *shell,
+                &mut <Cli as clap::CommandFactory>::command(),
+                "bsctl",
+                &mut std::io::stdout(),
+            );
+            return Ok(());
+        }
         Commands::Config { command } => {
             return commands::config_cmd::run(command.clone());
         }
@@ -147,7 +167,10 @@ async fn main() -> Result<()> {
         Commands::Mcp => {
             mcp::serve(client).await?;
         }
-        Commands::Config { .. } | Commands::Login { .. } => unreachable!(),
+        Commands::Config { .. }
+        | Commands::Login { .. }
+        | Commands::Version
+        | Commands::Completions { .. } => unreachable!(),
     }
 
     Ok(())
