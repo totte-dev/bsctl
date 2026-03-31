@@ -22,7 +22,7 @@ pub enum SearchCommand {
 
         /// Output format
         #[arg(long, short, default_value = "table")]
-        output: super::catalog::OutputFormat,
+        output: String,
     },
 }
 
@@ -59,7 +59,7 @@ pub async fn run(client: &BackstageClient, command: SearchCommand) -> Result<()>
             r#type,
             limit,
             output,
-        } => query(client, &term, r#type, limit, output).await,
+        } => query(client, &term, r#type, limit, &output).await,
     }
 }
 
@@ -68,7 +68,7 @@ async fn query(
     term: &str,
     r#type: Option<String>,
     limit: u32,
-    output: super::catalog::OutputFormat,
+    output: &str,
 ) -> Result<()> {
     let mut params = vec![
         format!("term={}", urlencoding::encode(term)),
@@ -82,24 +82,7 @@ async fn query(
     let resp: SearchResponse = client.get(&path).await?;
 
     match output {
-        super::catalog::OutputFormat::Table => {
-            let rows: Vec<Vec<Cell>> = resp
-                .results
-                .iter()
-                .map(|r| {
-                    vec![
-                        Cell::styled(
-                            r.document.kind.as_deref().unwrap_or(&r.result_type),
-                            Style::Dim,
-                        ),
-                        Cell::new(&r.document.title),
-                        Cell::styled(&r.document.location, Style::Dim),
-                    ]
-                })
-                .collect();
-            display::table(&["Kind", "Title", "Location"], &rows);
-        }
-        super::catalog::OutputFormat::Json => {
+        "json" => {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!(
@@ -116,6 +99,23 @@ async fn query(
                         .collect::<Vec<_>>()
                 ))?
             );
+        }
+        _ => {
+            let rows: Vec<Vec<Cell>> = resp
+                .results
+                .iter()
+                .map(|r| {
+                    vec![
+                        Cell::styled(
+                            r.document.kind.as_deref().unwrap_or(&r.result_type),
+                            Style::Dim,
+                        ),
+                        Cell::new(&r.document.title),
+                        Cell::styled(&r.document.location, Style::Dim),
+                    ]
+                })
+                .collect();
+            display::table(&["Kind", "Title", "Location"], &rows);
         }
     }
     Ok(())

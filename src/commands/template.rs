@@ -12,7 +12,16 @@ pub enum TemplateCommand {
     List {
         /// Output format
         #[arg(long, short, default_value = "table")]
-        output: super::catalog::OutputFormat,
+        output: String,
+    },
+    /// Show template details and parameter schema
+    Describe {
+        /// Template name
+        name: String,
+
+        /// Template namespace (default: default)
+        #[arg(long, default_value = "default")]
+        namespace: String,
     },
     /// Run a software template
     Run {
@@ -26,6 +35,14 @@ pub enum TemplateCommand {
         /// Template namespace (default: default)
         #[arg(long, default_value = "default")]
         namespace: String,
+
+        /// Wait for task completion (poll interval: 3s)
+        #[arg(long)]
+        wait: bool,
+
+        /// Timeout in seconds when using --wait (default: 600)
+        #[arg(long, default_value = "600")]
+        timeout: u64,
     },
     /// Check the status of a template task
     Status {
@@ -34,9 +51,14 @@ pub enum TemplateCommand {
 
         /// Output format
         #[arg(long, short, default_value = "table")]
-        output: super::catalog::OutputFormat,
+        output: String,
     },
-    /// Stream logs from a template task
+    /// Cancel a running template task
+    Cancel {
+        /// Task ID
+        task_id: String,
+    },
+    /// View logs from a template task
     Log {
         /// Task ID
         task_id: String,
@@ -80,24 +102,44 @@ struct TaskCreatedResponse {
 
 pub async fn run(client: &BackstageClient, command: TemplateCommand) -> Result<()> {
     match command {
-        TemplateCommand::List { output } => list(client, output).await,
+        TemplateCommand::List { output } => list(client, &output).await,
+        TemplateCommand::Describe { name, namespace } => describe(client, &name, &namespace).await,
         TemplateCommand::Run {
             name,
             params,
             namespace,
-        } => run_template(client, &name, &namespace, params).await,
-        TemplateCommand::Status { task_id, output } => status(client, &task_id, output).await,
+            wait,
+            timeout,
+        } => run_template(client, &name, &namespace, params, wait, timeout).await,
+        TemplateCommand::Status { task_id, output } => status(client, &task_id, &output).await,
+        TemplateCommand::Cancel { task_id } => cancel(client, &task_id).await,
         TemplateCommand::Log { task_id } => log(client, &task_id).await,
     }
 }
 
-async fn list(client: &BackstageClient, output: super::catalog::OutputFormat) -> Result<()> {
+async fn list(client: &BackstageClient, output: &str) -> Result<()> {
     let templates: Vec<TemplateEntity> = client
         .get("/api/catalog/entities?filter=kind=Template")
         .await?;
 
     match output {
-        super::catalog::OutputFormat::Table => {
+        "json" => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!(
+                    templates
+                        .iter()
+                        .map(|t| serde_json::json!({
+                            "namespace": t.metadata.namespace.as_deref().unwrap_or("default"),
+                            "name": t.metadata.name,
+                            "title": t.metadata.title,
+                            "description": t.metadata.description,
+                        }))
+                        .collect::<Vec<_>>()
+                ))?
+            );
+        }
+        _ => {
             let rows: Vec<Vec<Cell>> = templates
                 .iter()
                 .map(|t| {
@@ -122,24 +164,117 @@ async fn list(client: &BackstageClient, output: super::catalog::OutputFormat) ->
                 .collect();
             display::table(&["Name", "Title", "Description"], &rows);
         }
-        super::catalog::OutputFormat::Json => {
+    }
+    Ok(())
+}
+
+async fn describe(client: &BackstageClient, name: &str, namespace: &str) -> Result<()> {
+    let path = format!("/api/catalog/entities/by-name/template/{namespace}/{name}");
+    let entity: serde_json::Value = client.get(&path).await?;
+
+    let metadata = entity.get("metadata").cloned().unwrap_or_default();
+    let spec = entity.get("spec").cloned().unwrap_or_default();
+
+    let title = metadata
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or(name);
+    let desc = metadata
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    println!("\n{} {}", "Template:".dimmed(), title.bold());
+    if !desc.is_empty() {
+        println!("{}", desc.dimmed());
+    }
+
+    // Show parameters from spec.parameters
+    if let Some(parameters) = spec.get("parameters") {
+        println!("\n{}", "Parameters:".dimmed());
+        print_parameters(parameters, 1);
+    }
+
+    // Show steps
+    if let Some(steps) = spec.get("steps").and_then(|v| v.as_array()) {
+        println!("\n{}", "Steps:".dimmed());
+        for (i, step) in steps.iter().enumerate() {
+            let step_id = step.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+            let step_name = step.get("name").and_then(|v| v.as_str()).unwrap_or(step_id);
+            let action = step.get("action").and_then(|v| v.as_str()).unwrap_or("");
             println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!(
-                    templates
-                        .iter()
-                        .map(|t| serde_json::json!({
-                            "namespace": t.metadata.namespace.as_deref().unwrap_or("default"),
-                            "name": t.metadata.name,
-                            "title": t.metadata.title,
-                            "description": t.metadata.description,
-                        }))
-                        .collect::<Vec<_>>()
-                ))?
+                "  {}. {} {}",
+                i + 1,
+                step_name,
+                format!("({action})").dimmed()
             );
         }
     }
+
+    println!();
     Ok(())
+}
+
+fn print_parameters(params: &serde_json::Value, depth: usize) {
+    let indent = "  ".repeat(depth);
+
+    // Parameters can be an array of pages or a single object
+    let schemas = if let Some(arr) = params.as_array() {
+        arr.clone()
+    } else {
+        vec![params.clone()]
+    };
+
+    for schema in &schemas {
+        if let Some(title) = schema.get("title").and_then(|v| v.as_str()) {
+            println!("{indent}{}", title.bold());
+        }
+
+        if let Some(properties) = schema.get("properties").and_then(|v| v.as_object()) {
+            let required: Vec<&str> = schema
+                .get("required")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+
+            for (name, prop) in properties {
+                let prop_type = prop.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                let description = prop
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let default = prop.get("default");
+                let is_required = required.contains(&name.as_str());
+
+                let req_marker = if is_required {
+                    "*".red().to_string()
+                } else {
+                    " ".to_string()
+                };
+
+                let type_str = if let Some(enums) = prop.get("enum").and_then(|v| v.as_array()) {
+                    let values: Vec<&str> = enums.iter().filter_map(|v| v.as_str()).collect();
+                    values.join("|")
+                } else {
+                    prop_type.to_string()
+                };
+
+                let default_str = match default {
+                    Some(serde_json::Value::String(s)) => format!(" [default: {s}]"),
+                    Some(v) if !v.is_null() => format!(" [default: {v}]"),
+                    _ => String::new(),
+                };
+
+                println!(
+                    "{indent}{req_marker} {:<25} {:<15} {}{}",
+                    name,
+                    type_str.dimmed(),
+                    description,
+                    default_str.dimmed()
+                );
+            }
+        }
+    }
 }
 
 async fn run_template(
@@ -147,13 +282,14 @@ async fn run_template(
     name: &str,
     namespace: &str,
     params: Vec<String>,
+    wait: bool,
+    timeout: u64,
 ) -> Result<()> {
     let mut values = serde_json::Map::new();
     for param in &params {
         let (key, value) = param.split_once('=').ok_or_else(|| {
             anyhow::anyhow!("Invalid parameter '{param}'. Expected format: key=value")
         })?;
-        // Try to parse as JSON value, fall back to string
         let json_value = serde_json::from_str(value)
             .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
         values.insert(key.to_string(), json_value);
@@ -166,23 +302,62 @@ async fn run_template(
 
     let resp: TaskCreatedResponse = client.post("/api/scaffolder/v2/tasks", &body).await?;
 
-    println!("\n{} {}", "Task created:".green(), resp.id.bold());
-    println!("\n{}", "Check progress:".dimmed());
-    println!("  bsctl template status {}", resp.id);
-    println!("  bsctl template log {}", resp.id);
+    println!("{} {}", "Task created:".green(), resp.id.bold());
+
+    if wait {
+        wait_for_task(client, &resp.id, timeout).await?;
+    } else {
+        println!("\n{}", "Check progress:".dimmed());
+        println!("  bsctl template status {}", resp.id);
+        println!("  bsctl template log {}", resp.id);
+    }
     Ok(())
 }
 
-async fn status(
-    client: &BackstageClient,
-    task_id: &str,
-    output: super::catalog::OutputFormat,
-) -> Result<()> {
+async fn wait_for_task(client: &BackstageClient, task_id: &str, timeout: u64) -> Result<()> {
+    let start = std::time::Instant::now();
+    let timeout_dur = std::time::Duration::from_secs(timeout);
+
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        let path = format!("/api/scaffolder/v2/tasks/{task_id}");
+        let task: ScaffolderTask = client.get(&path).await?;
+
+        match task.status.as_str() {
+            "completed" => {
+                println!("{}", "Task completed successfully.".green());
+                return Ok(());
+            }
+            "failed" => {
+                anyhow::bail!("Task failed. Run 'bsctl template log {task_id}' for details.");
+            }
+            "cancelled" => {
+                anyhow::bail!("Task was cancelled.");
+            }
+            _ => {
+                if start.elapsed() > timeout_dur {
+                    anyhow::bail!(
+                        "Timed out after {timeout}s. Task {task_id} is still {status}.",
+                        status = task.status
+                    );
+                }
+                eprint!(".");
+            }
+        }
+    }
+}
+
+async fn status(client: &BackstageClient, task_id: &str, output: &str) -> Result<()> {
     let path = format!("/api/scaffolder/v2/tasks/{task_id}");
     let task: ScaffolderTask = client.get(&path).await?;
 
     match output {
-        super::catalog::OutputFormat::Table => {
+        "json" => {
+            let full: serde_json::Value = client.get(&path).await?;
+            println!("{}", serde_json::to_string_pretty(&full)?);
+        }
+        _ => {
             let status_display = match task.status.as_str() {
                 "completed" => task.status.green().to_string(),
                 "failed" => task.status.red().to_string(),
@@ -202,7 +377,6 @@ async fn status(
                 println!("  {:<12} {}", "Template:".dimmed(), entity_ref);
             }
 
-            // Show step status if available
             let steps_path = format!("/api/scaffolder/v2/tasks/{task_id}/steps");
             if let Ok(steps) = client.get::<serde_json::Value>(&steps_path).await
                 && let Some(arr) = steps.as_array()
@@ -222,11 +396,15 @@ async fn status(
             }
             println!();
         }
-        super::catalog::OutputFormat::Json => {
-            let full: serde_json::Value = client.get(&path).await?;
-            println!("{}", serde_json::to_string_pretty(&full)?);
-        }
     }
+    Ok(())
+}
+
+async fn cancel(client: &BackstageClient, task_id: &str) -> Result<()> {
+    let path = format!("/api/scaffolder/v2/tasks/{task_id}/cancel");
+    let body = serde_json::json!({});
+    let _: serde_json::Value = client.post(&path, &body).await?;
+    println!("{} task {task_id}", "Cancelled".yellow());
     Ok(())
 }
 

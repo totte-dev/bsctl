@@ -75,6 +75,41 @@ pub struct CatalogRefreshParams {
     pub entity_ref: String,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct CatalogRegisterParams {
+    /// Location URL to register (e.g. https://github.com/org/repo/blob/main/catalog-info.yaml)
+    pub target: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct CatalogFacetsParams {
+    /// Field to get facets for (e.g. kind, spec.type, spec.lifecycle)
+    pub field: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct TemplateDescribeParams {
+    /// Template name
+    pub name: String,
+    /// Template namespace (default: default)
+    #[serde(default = "default_namespace")]
+    pub namespace: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct PluginCallParams {
+    /// Plugin name (e.g. terraform, lambda, costs)
+    pub plugin: String,
+    /// Command name (e.g. prs, status, get)
+    pub command: String,
+    /// Positional arguments
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Named parameters as key-value pairs
+    #[serde(default)]
+    pub params: std::collections::HashMap<String, String>,
+}
+
 // -- Tool implementations --
 
 #[tool_router]
@@ -310,6 +345,175 @@ impl BsctlMcp {
         };
         self.client.set_token(token);
         Ok("Login successful. Guest token is now active.".to_string())
+    }
+
+    /// Register a new entity location in the catalog
+    #[tool(
+        name = "catalog_register",
+        description = "Register a new entity location in the Backstage catalog"
+    )]
+    async fn catalog_register(
+        &self,
+        params: Parameters<CatalogRegisterParams>,
+    ) -> Result<String, String> {
+        let body = serde_json::json!({
+            "type": "url",
+            "target": params.0.target,
+        });
+        match self
+            .client
+            .post::<serde_json::Value>("/api/catalog/locations", &body)
+            .await
+        {
+            Ok(v) => Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// List unique values for a catalog field (e.g. kind, spec.type)
+    #[tool(
+        name = "catalog_facets",
+        description = "List unique values for a catalog field (e.g. kind, spec.type, spec.lifecycle)"
+    )]
+    async fn catalog_facets(
+        &self,
+        params: Parameters<CatalogFacetsParams>,
+    ) -> Result<String, String> {
+        let path = format!("/api/catalog/entity-facets?facet={}", params.0.field);
+        match self.client.get::<serde_json::Value>(&path).await {
+            Ok(v) => Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Show template parameter schema and steps
+    #[tool(
+        name = "template_describe",
+        description = "Show details and parameter schema for a Backstage software template"
+    )]
+    async fn template_describe(
+        &self,
+        params: Parameters<TemplateDescribeParams>,
+    ) -> Result<String, String> {
+        let p = params.0;
+        let path = format!(
+            "/api/catalog/entities/by-name/template/{}/{}",
+            p.namespace, p.name
+        );
+        match self.client.get::<serde_json::Value>(&path).await {
+            Ok(entity) => {
+                // Extract just spec.parameters and spec.steps for conciseness
+                let spec = entity.get("spec").cloned().unwrap_or_default();
+                let summary = serde_json::json!({
+                    "name": entity.get("metadata").and_then(|m| m.get("name")),
+                    "title": entity.get("metadata").and_then(|m| m.get("title")),
+                    "description": entity.get("metadata").and_then(|m| m.get("description")),
+                    "parameters": spec.get("parameters"),
+                    "steps": spec.get("steps").and_then(|s| s.as_array()).map(|steps| {
+                        steps.iter().map(|s| serde_json::json!({
+                            "id": s.get("id"),
+                            "name": s.get("name"),
+                            "action": s.get("action"),
+                        })).collect::<Vec<_>>()
+                    }),
+                });
+                Ok(serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?)
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Call a custom plugin command defined in .bsctl/plugins.yaml
+    #[tool(
+        name = "plugin_call",
+        description = "Call a custom plugin command (e.g. terraform prs, costs get). See .bsctl/plugins.yaml for available commands."
+    )]
+    async fn plugin_call(&self, params: Parameters<PluginCallParams>) -> Result<String, String> {
+        let p = params.0;
+        let named: Vec<(String, String)> = p.params.into_iter().collect();
+
+        // Capture stdout by running the plugin logic and formatting result
+        let commands = self
+            .plugin_config
+            .plugins
+            .get(&p.plugin)
+            .ok_or_else(|| format!("Unknown plugin: {}", p.plugin))?;
+
+        let cmd = commands
+            .get(&p.command)
+            .ok_or_else(|| format!("Unknown command: {} {}", p.plugin, p.command))?;
+
+        // Build path with arg substitution
+        let mut path = cmd.path.clone();
+        for arg_def in &cmd.args {
+            let idx = arg_def.position - 1;
+            let value = p
+                .args
+                .get(idx)
+                .ok_or_else(|| format!("Missing required argument: {}", arg_def.name))?;
+            let encoded = urlencoding::encode(value);
+            path = path.replace(&format!("{{{}}}", arg_def.name), &encoded);
+        }
+
+        // Build query params
+        let mut query_parts = Vec::new();
+        for param_def in &cmd.params {
+            let value = named
+                .iter()
+                .find(|(k, _)| k == &param_def.name)
+                .map(|(_, v)| v);
+            if value.is_none() && param_def.required.unwrap_or(false) {
+                return Err(format!("Missing required parameter: {}", param_def.name));
+            }
+            if let Some(val) = value
+                && let Some(query_key) = &param_def.query
+            {
+                query_parts.push(format!(
+                    "{}={}",
+                    urlencoding::encode(query_key),
+                    urlencoding::encode(val)
+                ));
+            }
+        }
+        if !query_parts.is_empty() {
+            let sep = if path.contains('?') { "&" } else { "?" };
+            path = format!("{path}{sep}{}", query_parts.join("&"));
+        }
+
+        match &cmd.method {
+            crate::plugin::Method::Get => match self.client.get::<serde_json::Value>(&path).await {
+                Ok(v) => Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
+                Err(e) => Err(e.to_string()),
+            },
+            crate::plugin::Method::Delete => match self.client.delete_raw(&path).await {
+                Ok(text) => Ok(if text.is_empty() {
+                    "OK".to_string()
+                } else {
+                    text
+                }),
+                Err(e) => Err(e.to_string()),
+            },
+            _ => {
+                let mut body_map = serde_json::Map::new();
+                for param_def in &cmd.params {
+                    if let Some(body_key) = &param_def.body
+                        && let Some(val) = named
+                            .iter()
+                            .find(|(k, _)| k == &param_def.name)
+                            .map(|(_, v)| v)
+                    {
+                        let json_val = serde_json::from_str(val)
+                            .unwrap_or_else(|_| serde_json::Value::String(val.to_string()));
+                        body_map.insert(body_key.to_string(), json_val);
+                    }
+                }
+                let body = serde_json::Value::Object(body_map);
+                match self.client.post::<serde_json::Value>(&path, &body).await {
+                    Ok(v) => Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
+                    Err(e) => Err(e.to_string()),
+                }
+            }
+        }
     }
 }
 
