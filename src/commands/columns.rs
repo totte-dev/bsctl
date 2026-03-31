@@ -4,6 +4,7 @@ use anyhow::Result;
 use clap::Subcommand;
 
 use crate::client::BackstageClient;
+use crate::plugin::PluginConfig;
 
 #[derive(Subcommand)]
 pub enum ColumnsCommand {
@@ -23,13 +24,17 @@ pub enum ColumnsCommand {
     },
 }
 
-pub async fn run(client: &BackstageClient, command: ColumnsCommand) -> Result<()> {
+pub async fn run(
+    client: &BackstageClient,
+    command: ColumnsCommand,
+    plugin_config: &PluginConfig,
+) -> Result<()> {
     match command {
         ColumnsCommand::Generate {
             r#type,
             include_builtin,
             write,
-        } => generate(client, &r#type, include_builtin, write).await,
+        } => generate(client, &r#type, include_builtin, write, plugin_config).await,
     }
 }
 
@@ -38,6 +43,7 @@ async fn generate(
     entity_type: &str,
     include_builtin: bool,
     write: bool,
+    plugin_config: &PluginConfig,
 ) -> Result<()> {
     let path = format!("/api/catalog/entities?filter=spec.type={entity_type}");
     let entities: Vec<serde_json::Value> = client.get(&path).await?;
@@ -60,6 +66,9 @@ async fn generate(
         {
             for (key, value) in annotations {
                 if !include_builtin && key.starts_with("backstage.io/") {
+                    continue;
+                }
+                if crate::plugin::is_path_ignored(key, &plugin_config.column_ignores) {
                     continue;
                 }
                 if value.as_str().is_some_and(|s| !s.is_empty()) {

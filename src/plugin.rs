@@ -13,6 +13,9 @@ pub struct PluginConfig {
     /// Custom columns per entity type for `catalog list`
     #[serde(default)]
     pub columns: BTreeMap<String, Vec<ColumnDef>>,
+    /// Annotation patterns to ignore in column generation and display
+    #[serde(skip)]
+    pub column_ignores: Vec<String>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -201,6 +204,15 @@ impl PluginConfig {
             }
         }
 
+        // Load column ignore patterns
+        let ignore_path = dir.join("columns.ignore");
+        if ignore_path.exists() {
+            config.column_ignores = load_ignore_patterns(&ignore_path)?;
+        }
+
+        // Filter out ignored columns
+        config.apply_column_ignores();
+
         Ok(config)
     }
 
@@ -210,6 +222,15 @@ impl PluginConfig {
         let config: Self = serde_yaml_neo::from_str(&content)
             .with_context(|| format!("Failed to parse {}", path.display()))?;
         Ok(config)
+    }
+
+    fn apply_column_ignores(&mut self) {
+        if self.column_ignores.is_empty() {
+            return;
+        }
+        for columns in self.columns.values_mut() {
+            columns.retain(|col| !is_path_ignored(&col.path, &self.column_ignores));
+        }
     }
 }
 
@@ -338,6 +359,35 @@ pub fn print_command_help(plugin_name: &str, subcommand: &str, cmd: &CommandDef)
     println!("\nMethod: {:?} {}", cmd.method, cmd.path);
 }
 
+fn load_ignore_patterns(path: &Path) -> Result<Vec<String>> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    Ok(content
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(String::from)
+        .collect())
+}
+
+/// Check if an annotation path matches any ignore pattern.
+/// Patterns support `*` prefix/suffix wildcards.
+pub fn is_path_ignored(path: &str, patterns: &[String]) -> bool {
+    // Extract the annotation key from the full path
+    // e.g. "metadata.annotations.tactna.io/terraform-path" -> "tactna.io/terraform-path"
+    let key = path.strip_prefix("metadata.annotations.").unwrap_or(path);
+
+    patterns.iter().any(|pattern| {
+        if let Some(suffix) = pattern.strip_prefix('*') {
+            key.ends_with(suffix)
+        } else if let Some(prefix) = pattern.strip_suffix('*') {
+            key.starts_with(prefix)
+        } else {
+            key == pattern
+        }
+    })
+}
+
 impl std::fmt::Debug for Method {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -434,5 +484,39 @@ plugins:
             path = path.replace(&format!("{{{}}}", arg_def.name), value);
         }
         assert_eq!(path, "/api/items/42/sub/abc");
+    }
+
+    #[test]
+    fn ignore_suffix_pattern() {
+        let patterns = vec!["*/terraform-path".into(), "*/suffix".into()];
+        assert!(is_path_ignored(
+            "metadata.annotations.tactna.io/terraform-path",
+            &patterns
+        ));
+        assert!(is_path_ignored(
+            "metadata.annotations.tactna.io/suffix",
+            &patterns
+        ));
+        assert!(!is_path_ignored(
+            "metadata.annotations.tactna.io/customer",
+            &patterns
+        ));
+    }
+
+    #[test]
+    fn ignore_prefix_pattern() {
+        let patterns = vec!["backstage.io/*".into()];
+        assert!(is_path_ignored(
+            "backstage.io/managed-by-location",
+            &patterns
+        ));
+        assert!(!is_path_ignored("tactna.io/customer", &patterns));
+    }
+
+    #[test]
+    fn ignore_exact_pattern() {
+        let patterns = vec!["tactna.io/internal-only".into()];
+        assert!(is_path_ignored("tactna.io/internal-only", &patterns));
+        assert!(!is_path_ignored("tactna.io/customer", &patterns));
     }
 }

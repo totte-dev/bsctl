@@ -162,7 +162,9 @@ async fn main() -> Result<()> {
         Commands::Catalog { command } => {
             commands::catalog::run(&client, command, &plugin_config).await?
         }
-        Commands::Columns { command } => commands::columns::run(&client, command).await?,
+        Commands::Columns { command } => {
+            commands::columns::run(&client, command, &plugin_config).await?
+        }
         Commands::Search { command } => commands::search::run(&client, command).await?,
         Commands::Template { command } => commands::template::run(&client, command).await?,
         Commands::Api { command } => commands::api::run(&client, command).await?,
