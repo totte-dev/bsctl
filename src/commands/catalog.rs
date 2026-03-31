@@ -26,6 +26,10 @@ pub enum CatalogCommand {
         #[arg(long)]
         namespace: Option<String>,
 
+        /// Max number of entities to fetch (default: 500)
+        #[arg(long, default_value = "500")]
+        limit: usize,
+
         /// Output format
         #[arg(long, short, default_value = "table")]
         output: OutputFormat,
@@ -94,19 +98,34 @@ pub async fn run(
             r#type,
             tag,
             namespace,
+            limit,
             output,
-        } => list(client, kind, r#type, tag, namespace, output, plugin_config).await,
+        } => {
+            list(
+                client,
+                kind,
+                r#type,
+                tag,
+                namespace,
+                limit,
+                output,
+                plugin_config,
+            )
+            .await
+        }
         CatalogCommand::Get { entity_ref, output } => get(client, &entity_ref, output).await,
         CatalogCommand::Refresh { entity_ref } => refresh(client, &entity_ref).await,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn list(
     client: &BackstageClient,
     kind: Option<String>,
     r#type: Option<String>,
     tag: Option<String>,
     namespace: Option<String>,
+    limit: usize,
     output: OutputFormat,
     plugin_config: &crate::plugin::PluginConfig,
 ) -> Result<()> {
@@ -124,11 +143,13 @@ async fn list(
         filters.push(format!("metadata.namespace={ns}"));
     }
 
-    let query = if filters.is_empty() {
-        String::new()
-    } else {
-        format!("?filter={}", filters.join(","))
-    };
+    let mut query_params = Vec::new();
+    if !filters.is_empty() {
+        query_params.push(format!("filter={}", filters.join(",")));
+    }
+    query_params.push(format!("limit={limit}"));
+
+    let query = format!("?{}", query_params.join("&"));
 
     // Check if custom columns are defined for this type
     let custom_columns = r#type.as_ref().and_then(|t| plugin_config.columns.get(t));

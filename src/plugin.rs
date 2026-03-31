@@ -265,14 +265,15 @@ pub async fn run(
         )
     })?;
 
-    // Build path with positional arg substitution
+    // Build path with positional arg substitution (URL-encode values to prevent path traversal)
     let mut path = cmd.path.clone();
     for arg_def in &cmd.args {
         let idx = arg_def.position - 1;
         let value = positional_args
             .get(idx)
             .ok_or_else(|| anyhow::anyhow!("Missing required argument: {}", arg_def.name))?;
-        path = path.replace(&format!("{{{}}}", arg_def.name), value);
+        let encoded = urlencoding::encode(value);
+        path = path.replace(&format!("{{{}}}", arg_def.name), &encoded);
     }
 
     // Build query params and body from named params
@@ -311,14 +312,27 @@ pub async fn run(
     }
 
     let body = serde_json::Value::Object(body_map);
-    let resp: serde_json::Value = match cmd.method {
-        Method::Get => client.get(&path).await?,
-        Method::Post => client.post(&path, &body).await?,
-        Method::Put => client.put(&path, &body).await?,
-        Method::Delete => client.delete(&path).await?,
-    };
-
-    println!("{}", serde_json::to_string_pretty(&resp)?);
+    match cmd.method {
+        Method::Delete => {
+            let text = client.delete_raw(&path).await?;
+            if text.is_empty() {
+                println!("OK");
+            } else if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                println!("{}", serde_json::to_string_pretty(&json)?);
+            } else {
+                println!("{text}");
+            }
+        }
+        _ => {
+            let resp: serde_json::Value = match cmd.method {
+                Method::Get => client.get(&path).await?,
+                Method::Post => client.post(&path, &body).await?,
+                Method::Put => client.put(&path, &body).await?,
+                Method::Delete => unreachable!(),
+            };
+            println!("{}", serde_json::to_string_pretty(&resp)?);
+        }
+    }
     Ok(())
 }
 

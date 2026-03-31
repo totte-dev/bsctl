@@ -24,6 +24,10 @@ struct Cli {
     #[arg(long, short)]
     context: Option<String>,
 
+    /// Skip TLS certificate verification (for self-signed certs)
+    #[arg(long)]
+    insecure: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -155,7 +159,7 @@ async fn main() -> Result<()> {
                 .and_then(|name| auth::resolve_token(name))
         });
 
-    let client = client::BackstageClient::new(&base_url, token.as_deref());
+    let client = client::BackstageClient::new(&base_url, token.as_deref(), cli.insecure);
     let plugin_config = plugin::PluginConfig::load()?;
 
     match cli.command {
@@ -234,20 +238,28 @@ async fn run_plugin_command(
     }
 
     // Parse remaining args into positional and named
+    // Supports: --key value, --key=value, --flag (boolean)
     let mut positional = Vec::new();
     let mut named = Vec::new();
     let mut i = 2;
     while i < args.len() {
         if args[i].starts_with("--") {
-            let key = args[i].trim_start_matches("--").to_string();
-            // Check if next arg is a value (not another flag) or missing
-            let has_value = args.get(i + 1).is_some_and(|next| !next.starts_with("--"));
-            if has_value {
-                named.push((key, args[i + 1].clone()));
-                i += 2;
-            } else {
-                named.push((key, "true".to_string()));
+            let arg = args[i].trim_start_matches("--");
+            if let Some((key, value)) = arg.split_once('=') {
+                // --key=value
+                named.push((key.to_string(), value.to_string()));
                 i += 1;
+            } else {
+                let key = arg.to_string();
+                // Check if next arg is a value (not another flag) or missing
+                let has_value = args.get(i + 1).is_some_and(|next| !next.starts_with("--"));
+                if has_value {
+                    named.push((key, args[i + 1].clone()));
+                    i += 2;
+                } else {
+                    named.push((key, "true".to_string()));
+                    i += 1;
+                }
             }
         } else {
             positional.push(args[i].clone());

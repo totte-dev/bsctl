@@ -13,9 +13,10 @@ pub struct BackstageClient {
 }
 
 impl BackstageClient {
-    pub fn new(base_url: &str, token: Option<&str>) -> Self {
+    pub fn new(base_url: &str, token: Option<&str>, insecure: bool) -> Self {
         let http = Client::builder()
             .timeout(Duration::from_secs(30))
+            .danger_accept_invalid_certs(insecure)
             .build()
             .expect("failed to build HTTP client");
         Self {
@@ -94,7 +95,25 @@ impl BackstageClient {
             .await
     }
 
+    #[allow(dead_code)]
     pub async fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         self.request(reqwest::Method::DELETE, path).await
+    }
+
+    /// Send a DELETE request, returning the raw response text.
+    /// Handles 204 No Content gracefully.
+    pub async fn delete_raw(&self, path: &str) -> Result<String> {
+        let url = format!("{}{}", self.base_url, path);
+        let mut req = self.http.request(reqwest::Method::DELETE, &url);
+        if let Some(token) = self.current_token() {
+            req = req.bearer_auth(token);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("API error {status}: {body}");
+        }
+        Ok(resp.text().await.unwrap_or_default())
     }
 }

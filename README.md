@@ -158,6 +158,65 @@ bsctl terraform merge 42                   # Merge PR
 bsctl costs get --account-id 123456789     # AWS costs
 ```
 
+## Directory-Based Config
+
+For larger projects, split config into a `.bsctl/` directory:
+
+```
+.bsctl/
+  plugins.yaml              # Custom commands
+  columns.ignore            # Annotation patterns to exclude
+  columns/
+    client-account.yaml     # Custom columns for client-account type
+    tenant.yaml             # Custom columns for tenant type
+```
+
+Auto-generate column definitions from existing entities:
+
+```bash
+bsctl columns generate -t client-account         # Preview
+bsctl columns generate -t client-account --write  # Save to .bsctl/columns/
+```
+
+Columns use dot-path syntax to extract annotation values:
+
+```yaml
+# .bsctl/columns/tenant.yaml
+- header: Environment
+  path: metadata.annotations.my-org.io/environment
+  style: env  # dev=blue, preview=yellow, prod=green
+- header: Customer
+  path: metadata.annotations.my-org.io/customer
+```
+
+Exclude noisy annotations in `.bsctl/columns.ignore`:
+
+```
+*/terraform-path
+*/suffix
+backstage.io/*
+```
+
+## MCP Server
+
+Use bsctl as an MCP server for AI agent integration:
+
+```json
+{
+  "mcpServers": {
+    "backstage": {
+      "command": "bsctl",
+      "args": ["mcp"],
+      "env": {
+        "BSCTL_BASE_URL": "http://localhost:7007"
+      }
+    }
+  }
+}
+```
+
+Available tools: `login`, `catalog_list`, `catalog_get`, `catalog_refresh`, `search`, `template_list`, `template_run`, `template_status`.
+
 ## Output Formats
 
 All list commands support `-o json` for machine-readable output:

@@ -96,15 +96,13 @@ async fn generate(
     let mut yaml = String::new();
     for (key, count) in &annotation_counts {
         let header = annotation_key_to_header(key);
-        let coverage = if *count < total {
-            format!("  # {count}/{total} entities")
-        } else {
-            String::new()
-        };
         yaml.push_str(&format!("- header: {header}\n"));
-        yaml.push_str(&format!("  path: metadata.annotations.{key}{coverage}\n"));
+        yaml.push_str(&format!("  path: metadata.annotations.{key}\n"));
         if key.contains("environment") || key.contains("env") {
             yaml.push_str("  style: env\n");
+        }
+        if *count < total {
+            eprintln!("  note: {key} present in {count}/{total} entities");
         }
     }
 

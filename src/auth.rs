@@ -127,9 +127,30 @@ fn login_browser(base_url: &str, provider: &str) -> Result<String> {
         eprintln!("Failed to open browser automatically.");
     }
 
-    println!("Waiting for authentication callback...");
+    println!("Waiting for authentication callback (timeout: 5 minutes)...");
 
-    let (mut stream, _) = listener.accept().context("Failed to accept callback")?;
+    listener
+        .set_nonblocking(false)
+        .context("Failed to configure listener")?;
+    // Set a 5-minute timeout for the OAuth callback
+    let timeout = std::time::Duration::from_secs(300);
+    let start = std::time::Instant::now();
+    listener
+        .set_nonblocking(true)
+        .context("Failed to set non-blocking")?;
+
+    let (mut stream, _) = loop {
+        match listener.accept() {
+            Ok(conn) => break conn,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if start.elapsed() > timeout {
+                    anyhow::bail!("Authentication timed out after 5 minutes. Please try again.");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => return Err(e).context("Failed to accept callback"),
+        }
+    };
     let reader = BufReader::new(&stream);
 
     let mut request_line = String::new();

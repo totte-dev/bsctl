@@ -94,7 +94,7 @@ impl BsctlMcp {
         name = "catalog_list",
         description = "List entities in the Backstage catalog. Returns compact summary when custom columns are configured for the type."
     )]
-    async fn catalog_list(&self, params: Parameters<CatalogListParams>) -> String {
+    async fn catalog_list(&self, params: Parameters<CatalogListParams>) -> Result<String, String> {
         let p = params.0;
         let mut filters = Vec::new();
         if let Some(kind) = &p.kind {
@@ -114,7 +114,7 @@ impl BsctlMcp {
             .await
         {
             Ok(v) => v,
-            Err(e) => return format!("Error: {e}"),
+            Err(e) => return Err(e.to_string()),
         };
 
         // If custom columns are defined for this type, extract a compact summary
@@ -147,9 +147,9 @@ impl BsctlMcp {
                     serde_json::Value::Object(obj)
                 })
                 .collect();
-            serde_json::to_string_pretty(&summary).unwrap_or_else(|e| e.to_string())
+            Ok(serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?)
         } else {
-            serde_json::to_string_pretty(&entities).unwrap_or_else(|e| e.to_string())
+            Ok(serde_json::to_string_pretty(&entities).map_err(|e| e.to_string())?)
         }
     }
 
@@ -158,15 +158,15 @@ impl BsctlMcp {
         name = "catalog_get",
         description = "Get a specific entity from the Backstage catalog"
     )]
-    async fn catalog_get(&self, params: Parameters<CatalogGetParams>) -> String {
+    async fn catalog_get(&self, params: Parameters<CatalogGetParams>) -> Result<String, String> {
         let (kind, namespace, name) = match parse_ref(&params.0.entity_ref) {
             Ok(v) => v,
-            Err(e) => return format!("Error: {e}"),
+            Err(e) => return Err(e.to_string()),
         };
         let path = format!("/api/catalog/entities/by-name/{kind}/{namespace}/{name}");
         match self.client.get::<serde_json::Value>(&path).await {
-            Ok(v) => serde_json::to_string_pretty(&v).unwrap_or_else(|e| e.to_string()),
-            Err(e) => format!("Error: {e}"),
+            Ok(v) => Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
+            Err(e) => Err(e.to_string()),
         }
     }
 
@@ -175,10 +175,13 @@ impl BsctlMcp {
         name = "catalog_refresh",
         description = "Refresh a catalog entity to re-read from its source"
     )]
-    async fn catalog_refresh(&self, params: Parameters<CatalogRefreshParams>) -> String {
+    async fn catalog_refresh(
+        &self,
+        params: Parameters<CatalogRefreshParams>,
+    ) -> Result<String, String> {
         let (kind, namespace, name) = match parse_ref(&params.0.entity_ref) {
             Ok(v) => v,
-            Err(e) => return format!("Error: {e}"),
+            Err(e) => return Err(e.to_string()),
         };
         let body = serde_json::json!({ "entityRef": format!("{kind}:{namespace}/{name}") });
         match self
@@ -186,14 +189,14 @@ impl BsctlMcp {
             .post::<serde_json::Value>("/api/catalog/refresh", &body)
             .await
         {
-            Ok(_) => format!("Refreshed {kind}:{namespace}/{name}"),
-            Err(e) => format!("Error: {e}"),
+            Ok(_) => Ok(format!("Refreshed {kind}:{namespace}/{name}")),
+            Err(e) => Err(e.to_string()),
         }
     }
 
     /// Search the Backstage catalog
     #[tool(name = "search", description = "Search the Backstage catalog by term")]
-    async fn search(&self, params: Parameters<SearchParams>) -> String {
+    async fn search(&self, params: Parameters<SearchParams>) -> Result<String, String> {
         let p = params.0;
         let path = format!(
             "/api/search/query?term={}&limit={}",
@@ -201,8 +204,8 @@ impl BsctlMcp {
             p.limit
         );
         match self.client.get::<serde_json::Value>(&path).await {
-            Ok(v) => serde_json::to_string_pretty(&v).unwrap_or_else(|e| e.to_string()),
-            Err(e) => format!("Error: {e}"),
+            Ok(v) => Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
+            Err(e) => Err(e.to_string()),
         }
     }
 
@@ -211,7 +214,7 @@ impl BsctlMcp {
         name = "template_list",
         description = "List available software templates in Backstage"
     )]
-    async fn template_list(&self) -> String {
+    async fn template_list(&self) -> Result<String, String> {
         match self
             .client
             .get::<serde_json::Value>("/api/catalog/entities?filter=kind=Template")
@@ -229,12 +232,12 @@ impl BsctlMcp {
                             })
                         })
                         .collect();
-                    serde_json::to_string_pretty(&summary).unwrap_or_else(|e| e.to_string())
+                    Ok(serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?)
                 } else {
-                    serde_json::to_string_pretty(&v).unwrap_or_else(|e| e.to_string())
+                    Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?)
                 }
             }
-            Err(e) => format!("Error: {e}"),
+            Err(e) => Err(e.to_string()),
         }
     }
 
@@ -243,7 +246,7 @@ impl BsctlMcp {
         name = "template_run",
         description = "Run a Backstage software template"
     )]
-    async fn template_run(&self, params: Parameters<TemplateRunParams>) -> String {
+    async fn template_run(&self, params: Parameters<TemplateRunParams>) -> Result<String, String> {
         let p = params.0;
         let body = serde_json::json!({
             "templateRef": format!("template:{}/{}", p.namespace, p.name),
@@ -254,8 +257,8 @@ impl BsctlMcp {
             .post::<serde_json::Value>("/api/scaffolder/v2/tasks", &body)
             .await
         {
-            Ok(v) => serde_json::to_string_pretty(&v).unwrap_or_else(|e| e.to_string()),
-            Err(e) => format!("Error: {e}"),
+            Ok(v) => Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
+            Err(e) => Err(e.to_string()),
         }
     }
 
@@ -264,11 +267,14 @@ impl BsctlMcp {
         name = "template_status",
         description = "Check status of a Backstage scaffolder task"
     )]
-    async fn template_status(&self, params: Parameters<TaskStatusParams>) -> String {
+    async fn template_status(
+        &self,
+        params: Parameters<TaskStatusParams>,
+    ) -> Result<String, String> {
         let path = format!("/api/scaffolder/v2/tasks/{}", params.0.task_id);
         match self.client.get::<serde_json::Value>(&path).await {
-            Ok(v) => serde_json::to_string_pretty(&v).unwrap_or_else(|e| e.to_string()),
-            Err(e) => format!("Error: {e}"),
+            Ok(v) => Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
+            Err(e) => Err(e.to_string()),
         }
     }
 
@@ -277,22 +283,22 @@ impl BsctlMcp {
         name = "login",
         description = "Authenticate with Backstage using guest auth. Call this first if other tools return 401 errors."
     )]
-    async fn login(&self) -> String {
+    async fn login(&self) -> Result<String, String> {
         let base_url = self.client.base_url();
         let url = format!("{base_url}/api/auth/guest/refresh");
         let resp = match reqwest::Client::new().get(&url).send().await {
             Ok(r) => r,
-            Err(e) => return format!("Error: Failed to reach auth endpoint: {e}"),
+            Err(e) => return Err(format!("Failed to reach auth endpoint: {e}")),
         };
         if !resp.status().is_success() {
-            return format!(
-                "Error: Guest auth failed ({}). Is guest provider enabled?",
+            return Err(format!(
+                "Guest auth failed ({}). Is guest provider enabled?",
                 resp.status()
-            );
+            ));
         }
         let body: serde_json::Value = match resp.json().await {
             Ok(v) => v,
-            Err(e) => return format!("Error: Failed to parse auth response: {e}"),
+            Err(e) => return Err(format!("Failed to parse auth response: {e}")),
         };
         let token = match body
             .get("backstageIdentity")
@@ -300,10 +306,10 @@ impl BsctlMcp {
             .and_then(|t| t.as_str())
         {
             Some(t) => t.to_string(),
-            None => return "Error: No token in guest auth response".to_string(),
+            None => return Err("No token in guest auth response".to_string()),
         };
         self.client.set_token(token);
-        "Login successful. Guest token is now active.".to_string()
+        Ok("Login successful. Guest token is now active.".to_string())
     }
 }
 

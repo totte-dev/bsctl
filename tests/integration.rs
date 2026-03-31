@@ -43,6 +43,7 @@ fn catalog_list_table() {
     let mut server = Server::new();
     let mock = server
         .mock("GET", "/api/catalog/entities")
+        .match_query(Matcher::Any)
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(
@@ -108,6 +109,7 @@ fn catalog_list_json_output() {
     let mut server = Server::new();
     let mock = server
         .mock("GET", "/api/catalog/entities")
+        .match_query(Matcher::Any)
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(r#"[{"kind":"Component","metadata":{"name":"svc1","namespace":"default","description":"Desc"},"spec":{"type":"service"}}]"#)
