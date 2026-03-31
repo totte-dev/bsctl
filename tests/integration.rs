@@ -99,7 +99,7 @@ fn catalog_list_with_type_filter() {
     let output = runner.stdout(&["catalog", "list", "-t", "client-account"]);
 
     assert!(output.contains("client-tc3"));
-    assert!(output.contains("TYPE"));
+    assert!(output.contains("NAME")); // Standard or custom columns both have NAME
     mock.assert();
 }
 
@@ -118,8 +118,8 @@ fn catalog_list_json_output() {
 
     let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert!(parsed.is_array());
-    assert_eq!(parsed[0]["name"], "svc1");
-    assert_eq!(parsed[0]["type"], "service");
+    assert_eq!(parsed[0]["metadata"]["name"], "svc1");
+    assert_eq!(parsed[0]["spec"]["type"], "service");
     mock.assert();
 }
 

@@ -80,12 +80,14 @@ struct EntityMetadata {
     #[serde(default)]
     name: String,
     #[serde(default)]
-    namespace: Option<String>,
-    #[serde(default)]
     description: Option<String>,
 }
 
-pub async fn run(client: &BackstageClient, command: CatalogCommand) -> Result<()> {
+pub async fn run(
+    client: &BackstageClient,
+    command: CatalogCommand,
+    plugin_config: &crate::plugin::PluginConfig,
+) -> Result<()> {
     match command {
         CatalogCommand::List {
             kind,
@@ -93,7 +95,7 @@ pub async fn run(client: &BackstageClient, command: CatalogCommand) -> Result<()
             tag,
             namespace,
             output,
-        } => list(client, kind, r#type, tag, namespace, output).await,
+        } => list(client, kind, r#type, tag, namespace, output, plugin_config).await,
         CatalogCommand::Get { entity_ref, output } => get(client, &entity_ref, output).await,
         CatalogCommand::Refresh { entity_ref } => refresh(client, &entity_ref).await,
     }
@@ -106,6 +108,7 @@ async fn list(
     tag: Option<String>,
     namespace: Option<String>,
     output: OutputFormat,
+    plugin_config: &crate::plugin::PluginConfig,
 ) -> Result<()> {
     let mut filters = Vec::new();
     if let Some(kind) = &kind {
@@ -127,29 +130,67 @@ async fn list(
         format!("?filter={}", filters.join(","))
     };
 
-    let entities: Vec<Entity> = client.get(&format!("/api/catalog/entities{query}")).await?;
+    // Check if custom columns are defined for this type
+    let custom_columns = r#type.as_ref().and_then(|t| plugin_config.columns.get(t));
 
     match output {
         OutputFormat::Table => {
-            let rows: Vec<Vec<Cell>> = entities.iter().map(format_entity_row).collect();
-            display::table(&["Name", "Kind", "Type", "Owner", "Description"], &rows);
+            if let Some(columns) = custom_columns {
+                // Use raw JSON to extract custom column values
+                let raw_entities: Vec<serde_json::Value> =
+                    client.get(&format!("/api/catalog/entities{query}")).await?;
+
+                let mut headers: Vec<&str> = vec!["Name"];
+                let col_headers: Vec<String> = columns.iter().map(|c| c.header.clone()).collect();
+                for h in &col_headers {
+                    headers.push(h);
+                }
+                headers.push("Description");
+
+                let rows: Vec<Vec<Cell>> = raw_entities
+                    .iter()
+                    .map(|e| {
+                        let name = e
+                            .get("metadata")
+                            .and_then(|m| m.get("name"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let desc = e
+                            .get("metadata")
+                            .and_then(|m| m.get("description"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .lines()
+                            .next()
+                            .unwrap_or("");
+
+                        let mut row = vec![Cell::new(name)];
+                        for col in columns {
+                            let value = col.extract(e);
+                            let style = match col.style.as_deref() {
+                                Some("env") => display::env_style(&value),
+                                _ => Style::Default,
+                            };
+                            row.push(Cell::styled(value, style));
+                        }
+                        row.push(Cell::styled(desc, Style::Dim));
+                        row
+                    })
+                    .collect();
+
+                display::table(&headers, &rows);
+            } else {
+                // Standard columns
+                let entities: Vec<Entity> =
+                    client.get(&format!("/api/catalog/entities{query}")).await?;
+                let rows: Vec<Vec<Cell>> = entities.iter().map(format_entity_row).collect();
+                display::table(&["Name", "Kind", "Type", "Owner", "Description"], &rows);
+            }
         }
         OutputFormat::Json => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!(
-                    entities
-                        .iter()
-                        .map(|e| serde_json::json!({
-                            "kind": e.kind,
-                            "type": e.spec.entity_type,
-                            "namespace": e.metadata.namespace.as_deref().unwrap_or("default"),
-                            "name": e.metadata.name,
-                            "description": e.metadata.description,
-                        }))
-                        .collect::<Vec<_>>()
-                ))?
-            );
+            let entities: Vec<serde_json::Value> =
+                client.get(&format!("/api/catalog/entities{query}")).await?;
+            println!("{}", serde_json::to_string_pretty(&entities)?);
         }
     }
     Ok(())

@@ -10,6 +10,65 @@ use crate::client::BackstageClient;
 pub struct PluginConfig {
     #[serde(default)]
     pub plugins: BTreeMap<String, BTreeMap<String, CommandDef>>,
+    /// Custom columns per entity type for `catalog list`
+    #[serde(default)]
+    pub columns: BTreeMap<String, Vec<ColumnDef>>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct ColumnDef {
+    /// Column header text
+    pub header: String,
+    /// Dot-separated path to extract value from entity JSON
+    /// e.g. "metadata.annotations.tactna.io/client-account-id"
+    pub path: String,
+    /// Optional style: "env" applies environment coloring (dev=blue, preview=yellow, prod=green)
+    #[serde(default)]
+    pub style: Option<String>,
+}
+
+impl ColumnDef {
+    /// Extract a value from a JSON entity using a dot-separated path.
+    ///
+    /// For paths like `metadata.annotations.tactna.io/client-account-id`,
+    /// when a segment isn't found as a direct key, the remaining path is
+    /// joined and tried as a single key (to handle annotation keys with dots).
+    pub fn extract(&self, entity: &serde_json::Value) -> String {
+        let segments: Vec<&str> = self.path.split('.').collect();
+        let result = resolve_path(entity, &segments);
+        match result {
+            serde_json::Value::String(s) => s,
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::Bool(b) => b.to_string(),
+            serde_json::Value::Null => String::new(),
+            other => other.to_string(),
+        }
+    }
+}
+
+fn resolve_path(value: &serde_json::Value, segments: &[&str]) -> serde_json::Value {
+    if segments.is_empty() {
+        return value.clone();
+    }
+
+    // Try exact segment match first
+    if let Some(child) = value.get(segments[0]) {
+        let result = resolve_path(child, &segments[1..]);
+        if !result.is_null() {
+            return result;
+        }
+    }
+
+    // If exact match fails, try joining remaining segments as a single key
+    // This handles annotation keys like "tactna.io/client-account-id"
+    if segments.len() > 1 {
+        let joined = segments.join(".");
+        if let Some(child) = value.get(&joined) {
+            return child.clone();
+        }
+    }
+
+    serde_json::Value::Null
 }
 
 #[derive(Deserialize, Clone)]

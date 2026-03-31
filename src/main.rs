@@ -154,7 +154,9 @@ async fn main() -> Result<()> {
     let plugin_config = plugin::PluginConfig::load()?;
 
     match cli.command {
-        Commands::Catalog { command } => commands::catalog::run(&client, command).await?,
+        Commands::Catalog { command } => {
+            commands::catalog::run(&client, command, &plugin_config).await?
+        }
         Commands::Search { command } => commands::search::run(&client, command).await?,
         Commands::Template { command } => commands::template::run(&client, command).await?,
         Commands::Api { command } => commands::api::run(&client, command).await?,

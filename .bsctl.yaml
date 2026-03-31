@@ -74,3 +74,19 @@ plugins:
           query: accountId
           required: true
           description: AWS account ID
+
+# Custom columns per entity type for `catalog list -t <type>`
+columns:
+  client-account:
+    - header: Account ID
+      path: metadata.annotations.tactna.io/client-account-id
+    - header: Customer
+      path: metadata.annotations.tactna.io/customer
+  tenant:
+    - header: Env
+      path: metadata.annotations.tactna.io/environment
+      style: env
+    - header: Customer
+      path: metadata.annotations.tactna.io/customer
+    - header: Terraform Path
+      path: metadata.annotations.tactna.io/terraform-path
