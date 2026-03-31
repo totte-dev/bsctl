@@ -423,6 +423,76 @@ impl BsctlMcp {
         }
     }
 
+    /// Unregister an entity by removing its location
+    #[tool(
+        name = "catalog_unregister",
+        description = "Unregister an entity from the Backstage catalog by removing its location"
+    )]
+    async fn catalog_unregister(
+        &self,
+        params: Parameters<CatalogRefreshParams>,
+    ) -> Result<String, String> {
+        let (kind, namespace, name) = parse_ref(&params.0.entity_ref).map_err(|e| e.to_string())?;
+        let path = format!("/api/catalog/entities/by-name/{kind}/{namespace}/{name}");
+        let entity: serde_json::Value = self.client.get(&path).await.map_err(|e| e.to_string())?;
+
+        let location = entity
+            .get("metadata")
+            .and_then(|m| m.get("annotations"))
+            .and_then(|a| a.get("backstage.io/managed-by-location"))
+            .and_then(|v| v.as_str())
+            .ok_or("Entity has no managed-by-location annotation")?;
+
+        let locations: Vec<serde_json::Value> = self
+            .client
+            .get("/api/catalog/locations")
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let location_entry = locations.iter().find(|l| {
+            l.get("data")
+                .and_then(|d| d.get("target"))
+                .and_then(|v| v.as_str())
+                .is_some_and(|t| location.ends_with(t))
+        });
+
+        if let Some(entry) = location_entry
+            && let Some(id) = entry
+                .get("data")
+                .and_then(|d| d.get("id"))
+                .and_then(|v| v.as_str())
+            {
+                let delete_path = format!("/api/catalog/locations/{id}");
+                self.client
+                    .delete_raw(&delete_path)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                return Ok(format!("Unregistered {kind}:{namespace}/{name}"));
+            }
+
+        Err(format!(
+            "Could not find location for entity. Location: {location}"
+        ))
+    }
+
+    /// Cancel a running scaffolder task
+    #[tool(
+        name = "template_cancel",
+        description = "Cancel a running Backstage scaffolder task"
+    )]
+    async fn template_cancel(
+        &self,
+        params: Parameters<TaskStatusParams>,
+    ) -> Result<String, String> {
+        let path = format!("/api/scaffolder/v2/tasks/{}/cancel", params.0.task_id);
+        let body = serde_json::json!({});
+        self.client
+            .post::<serde_json::Value>(&path, &body)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(format!("Cancelled task {}", params.0.task_id))
+    }
+
     /// Call a custom plugin command defined in .bsctl/plugins.yaml
     #[tool(
         name = "plugin_call",
@@ -493,7 +563,7 @@ impl BsctlMcp {
                 }),
                 Err(e) => Err(e.to_string()),
             },
-            _ => {
+            method => {
                 let mut body_map = serde_json::Map::new();
                 for param_def in &cmd.params {
                     if let Some(body_key) = &param_def.body
@@ -508,7 +578,13 @@ impl BsctlMcp {
                     }
                 }
                 let body = serde_json::Value::Object(body_map);
-                match self.client.post::<serde_json::Value>(&path, &body).await {
+                let result = match method {
+                    crate::plugin::Method::Put => {
+                        self.client.put::<serde_json::Value>(&path, &body).await
+                    }
+                    _ => self.client.post::<serde_json::Value>(&path, &body).await,
+                };
+                match result {
                     Ok(v) => Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
                     Err(e) => Err(e.to_string()),
                 }

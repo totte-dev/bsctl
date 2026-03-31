@@ -326,17 +326,21 @@ async fn wait_for_task(client: &BackstageClient, task_id: &str, timeout: u64) ->
 
         match task.status.as_str() {
             "completed" => {
+                eprintln!();
                 println!("{}", "Task completed successfully.".green());
                 return Ok(());
             }
             "failed" => {
+                eprintln!();
                 anyhow::bail!("Task failed. Run 'bsctl template log {task_id}' for details.");
             }
             "cancelled" => {
+                eprintln!();
                 anyhow::bail!("Task was cancelled.");
             }
             _ => {
                 if start.elapsed() > timeout_dur {
+                    eprintln!();
                     anyhow::bail!(
                         "Timed out after {timeout}s. Task {task_id} is still {status}.",
                         status = task.status

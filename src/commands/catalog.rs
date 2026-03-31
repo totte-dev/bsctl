@@ -34,6 +34,10 @@ pub enum CatalogCommand {
         #[arg(long, default_value = "500")]
         limit: usize,
 
+        /// Offset for pagination (skip first N entities)
+        #[arg(long, default_value = "0")]
+        offset: usize,
+
         /// Output format: table, json, or jsonpath=<expr>
         #[arg(long, short, default_value = "table")]
         output: String,
@@ -113,6 +117,7 @@ pub async fn run(
             namespace,
             sort,
             limit,
+            offset,
             output,
         } => {
             list(
@@ -123,6 +128,7 @@ pub async fn run(
                 namespace,
                 sort,
                 limit,
+                offset,
                 &output,
                 plugin_config,
             )
@@ -145,6 +151,7 @@ async fn list(
     namespace: Option<String>,
     sort: Option<String>,
     limit: usize,
+    offset: usize,
     output: &str,
     plugin_config: &crate::plugin::PluginConfig,
 ) -> Result<()> {
@@ -167,6 +174,9 @@ async fn list(
         query_params.push(format!("filter={}", filters.join(",")));
     }
     query_params.push(format!("limit={limit}"));
+    if offset > 0 {
+        query_params.push(format!("offset={offset}"));
+    }
 
     let query = format!("?{}", query_params.join("&"));
 
@@ -258,8 +268,14 @@ fn extract_sort_field(entity: &serde_json::Value, field: &str) -> String {
     }
 }
 
-/// Simple jsonpath extraction: supports dot-separated field paths
+/// Simple jsonpath extraction: supports dot-separated field paths.
+/// Strips leading `$` or `$.` prefix for compatibility with standard jsonpath syntax.
 fn extract_jsonpath(entity: &serde_json::Value, expr: &str) -> String {
+    // Strip leading $ or $.
+    let expr = expr
+        .strip_prefix("$.")
+        .or_else(|| expr.strip_prefix('$'))
+        .unwrap_or(expr);
     let mut current = entity;
     for segment in expr.split('.') {
         match current.get(segment) {
