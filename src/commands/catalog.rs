@@ -30,11 +30,11 @@ pub enum CatalogCommand {
         #[arg(long, short)]
         sort: Option<String>,
 
-        /// Max number of entities to fetch (default: 500)
+        /// Max number of entities to display (client-side, default: 500)
         #[arg(long, default_value = "500")]
         limit: usize,
 
-        /// Offset for pagination (skip first N entities)
+        /// Skip first N entities (client-side pagination)
         #[arg(long, default_value = "0")]
         offset: usize,
 
@@ -169,28 +169,27 @@ async fn list(
         filters.push(format!("metadata.namespace={ns}"));
     }
 
-    let mut query_params = Vec::new();
-    if !filters.is_empty() {
-        query_params.push(format!("filter={}", filters.join(",")));
-    }
-    query_params.push(format!("limit={limit}"));
-    if offset > 0 {
-        query_params.push(format!("offset={offset}"));
-    }
+    let query = if filters.is_empty() {
+        String::new()
+    } else {
+        format!("?filter={}", filters.join(","))
+    };
 
-    let query = format!("?{}", query_params.join("&"));
-
-    // Fetch as raw JSON for flexibility
+    // Backstage catalog API returns all matching entities (no server-side pagination)
     let mut entities: Vec<serde_json::Value> =
         client.get(&format!("/api/catalog/entities{query}")).await?;
 
-    // Warn if results may be truncated
-    if entities.len() >= limit {
+    let total = entities.len();
+
+    // Client-side offset + limit
+    if offset > 0 {
+        entities = entities.into_iter().skip(offset).collect();
+    }
+    if entities.len() > limit {
         eprintln!(
-            "Warning: returned {} entities (limit {}). Results may be truncated. Use --limit to increase.",
-            entities.len(),
-            limit
+            "Showing {limit} of {total} entities. Use --limit to show more, --offset to paginate."
         );
+        entities.truncate(limit);
     }
 
     // Sort
@@ -409,7 +408,10 @@ async fn get(client: &BackstageClient, entity_ref: &str, output: &str) -> Result
 }
 
 async fn facets(client: &BackstageClient, field: &str) -> Result<()> {
-    let path = format!("/api/catalog/entity-facets?facet={field}");
+    let path = format!(
+        "/api/catalog/entity-facets?facet={}",
+        urlencoding::encode(field)
+    );
     let resp: serde_json::Value = client.get(&path).await?;
 
     if let Some(facets) = resp

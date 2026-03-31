@@ -321,7 +321,7 @@ async fn wait_for_task(client: &BackstageClient, task_id: &str, timeout: u64) ->
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-        let path = format!("/api/scaffolder/v2/tasks/{task_id}");
+        let path = format!("/api/scaffolder/v2/tasks/{}", urlencoding::encode(task_id));
         let task: ScaffolderTask = client.get(&path).await?;
 
         match task.status.as_str() {
@@ -353,8 +353,7 @@ async fn wait_for_task(client: &BackstageClient, task_id: &str, timeout: u64) ->
 }
 
 async fn status(client: &BackstageClient, task_id: &str, output: &str) -> Result<()> {
-    let path = format!("/api/scaffolder/v2/tasks/{task_id}");
-    let task: ScaffolderTask = client.get(&path).await?;
+    let path = format!("/api/scaffolder/v2/tasks/{}", urlencoding::encode(task_id));
 
     match output {
         "json" => {
@@ -362,6 +361,7 @@ async fn status(client: &BackstageClient, task_id: &str, output: &str) -> Result
             println!("{}", serde_json::to_string_pretty(&full)?);
         }
         _ => {
+            let task: ScaffolderTask = client.get(&path).await?;
             let status_display = match task.status.as_str() {
                 "completed" => task.status.green().to_string(),
                 "failed" => task.status.red().to_string(),
@@ -381,7 +381,10 @@ async fn status(client: &BackstageClient, task_id: &str, output: &str) -> Result
                 println!("  {:<12} {}", "Template:".dimmed(), entity_ref);
             }
 
-            let steps_path = format!("/api/scaffolder/v2/tasks/{task_id}/steps");
+            let steps_path = format!(
+                "/api/scaffolder/v2/tasks/{}/steps",
+                urlencoding::encode(task_id)
+            );
             if let Ok(steps) = client.get::<serde_json::Value>(&steps_path).await
                 && let Some(arr) = steps.as_array()
             {
@@ -405,7 +408,10 @@ async fn status(client: &BackstageClient, task_id: &str, output: &str) -> Result
 }
 
 async fn cancel(client: &BackstageClient, task_id: &str) -> Result<()> {
-    let path = format!("/api/scaffolder/v2/tasks/{task_id}/cancel");
+    let path = format!(
+        "/api/scaffolder/v2/tasks/{}/cancel",
+        urlencoding::encode(task_id)
+    );
     let body = serde_json::json!({});
     let _: serde_json::Value = client.post(&path, &body).await?;
     println!("{} task {task_id}", "Cancelled".yellow());
@@ -413,7 +419,10 @@ async fn cancel(client: &BackstageClient, task_id: &str) -> Result<()> {
 }
 
 async fn log(client: &BackstageClient, task_id: &str) -> Result<()> {
-    let path = format!("/api/scaffolder/v2/tasks/{task_id}/events");
+    let path = format!(
+        "/api/scaffolder/v2/tasks/{}/events",
+        urlencoding::encode(task_id)
+    );
     let events: Vec<serde_json::Value> = client.get(&path).await?;
 
     for event in &events {

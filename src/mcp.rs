@@ -306,7 +306,10 @@ impl BsctlMcp {
         &self,
         params: Parameters<TaskStatusParams>,
     ) -> Result<String, String> {
-        let path = format!("/api/scaffolder/v2/tasks/{}", params.0.task_id);
+        let path = format!(
+            "/api/scaffolder/v2/tasks/{}",
+            urlencoding::encode(&params.0.task_id)
+        );
         match self.client.get::<serde_json::Value>(&path).await {
             Ok(v) => Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
             Err(e) => Err(e.to_string()),
@@ -379,7 +382,10 @@ impl BsctlMcp {
         &self,
         params: Parameters<CatalogFacetsParams>,
     ) -> Result<String, String> {
-        let path = format!("/api/catalog/entity-facets?facet={}", params.0.field);
+        let path = format!(
+            "/api/catalog/entity-facets?facet={}",
+            urlencoding::encode(&params.0.field)
+        );
         match self.client.get::<serde_json::Value>(&path).await {
             Ok(v) => Ok(serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?),
             Err(e) => Err(e.to_string()),
@@ -461,14 +467,14 @@ impl BsctlMcp {
                 .get("data")
                 .and_then(|d| d.get("id"))
                 .and_then(|v| v.as_str())
-            {
-                let delete_path = format!("/api/catalog/locations/{id}");
-                self.client
-                    .delete_raw(&delete_path)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                return Ok(format!("Unregistered {kind}:{namespace}/{name}"));
-            }
+        {
+            let delete_path = format!("/api/catalog/locations/{id}");
+            self.client
+                .delete_raw(&delete_path)
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(format!("Unregistered {kind}:{namespace}/{name}"));
+        }
 
         Err(format!(
             "Could not find location for entity. Location: {location}"
@@ -484,7 +490,10 @@ impl BsctlMcp {
         &self,
         params: Parameters<TaskStatusParams>,
     ) -> Result<String, String> {
-        let path = format!("/api/scaffolder/v2/tasks/{}/cancel", params.0.task_id);
+        let path = format!(
+            "/api/scaffolder/v2/tasks/{}/cancel",
+            urlencoding::encode(&params.0.task_id)
+        );
         let body = serde_json::json!({});
         self.client
             .post::<serde_json::Value>(&path, &body)
