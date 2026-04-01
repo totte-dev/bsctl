@@ -17,7 +17,7 @@ Backstage has a great Web UI and an official CLI for plugin development, but **n
 
 ### vs @backstage/plugin-mcp-actions-backend
 
-Backstage also has an [official MCP plugin](https://backstage.io/docs/features/mcp/) (experimental) that runs as a server-side backend plugin. bsctl takes the opposite approach:
+Backstage also has an [official MCP plugin](https://github.com/backstage/backstage/tree/master/plugins/mcp-actions-backend) (experimental) that runs as a server-side backend plugin. bsctl takes the opposite approach:
 
 - **bsctl**: Client-side. `cargo install bsctl` and you're done. No Backstage deployment needed.
 - **Official plugin**: Server-side. Requires installing a backend plugin and redeploying Backstage.
