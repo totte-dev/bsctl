@@ -62,7 +62,7 @@ enum Commands {
     },
     /// Authenticate with a Backstage instance
     Login {
-        /// Auth provider (e.g. github, google, okta, microsoft)
+        /// Auth provider (guest, github, google, okta, microsoft)
         #[arg(long, short, default_value = "github")]
         provider: String,
     },
