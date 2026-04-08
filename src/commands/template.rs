@@ -202,6 +202,36 @@ fn print_parameters(params: &serde_json::Value, depth: usize) {
     }
 }
 
+/// Extract default values from a template's parameters schema.
+///
+/// The schema's `parameters` field is an array of steps, each with a
+/// `properties` object. We walk every step and collect `default` values.
+fn extract_defaults(entity: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    let mut defaults = serde_json::Map::new();
+    let Some(parameters) = entity.get("spec").and_then(|s| s.get("parameters")) else {
+        return defaults;
+    };
+
+    let steps: Vec<&serde_json::Value> = if let Some(arr) = parameters.as_array() {
+        arr.iter().collect()
+    } else {
+        vec![parameters]
+    };
+
+    for step in steps {
+        if let Some(properties) = step.get("properties").and_then(|v| v.as_object()) {
+            for (name, prop) in properties {
+                if let Some(default) = prop.get("default")
+                    && !default.is_null()
+                {
+                    defaults.insert(name.clone(), default.clone());
+                }
+            }
+        }
+    }
+    defaults
+}
+
 async fn run_template(
     client: &BackstageClient,
     name: &str,
@@ -210,7 +240,11 @@ async fn run_template(
     wait: bool,
     timeout: u64,
 ) -> Result<()> {
-    let mut values = serde_json::Map::new();
+    // Fetch the template schema to collect default values
+    let entity = service::template_describe(client, name, namespace).await?;
+    let mut values = extract_defaults(&entity);
+
+    // --param values override defaults
     for param in &params {
         let (key, value) = param
             .split_once('=')
@@ -345,4 +379,126 @@ async fn log(client: &BackstageClient, task_id: &str) -> Result<()> {
         println!("No events yet.");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_entity(parameters: serde_json::Value) -> serde_json::Value {
+        json!({
+            "spec": {
+                "parameters": parameters
+            }
+        })
+    }
+
+    #[test]
+    fn extract_defaults_merges_across_steps() {
+        let entity = make_entity(json!([
+            {
+                "title": "Step 1",
+                "properties": {
+                    "customer": { "type": "string" },
+                    "unit": { "type": "string", "default": "Hammerhead" }
+                }
+            },
+            {
+                "title": "Step 2",
+                "properties": {
+                    "project_name": { "type": "string", "default": "FY25 Tactna" },
+                    "sso_group_prefix": { "type": "string", "default": "hammerhead" }
+                }
+            }
+        ]));
+
+        let defaults = extract_defaults(&entity);
+        assert_eq!(defaults.len(), 3);
+        assert_eq!(defaults["unit"], json!("Hammerhead"));
+        assert_eq!(defaults["project_name"], json!("FY25 Tactna"));
+        assert_eq!(defaults["sso_group_prefix"], json!("hammerhead"));
+        // customer has no default, so it should not appear
+        assert!(!defaults.contains_key("customer"));
+    }
+
+    #[test]
+    fn extract_defaults_preserves_non_string_types() {
+        let entity = make_entity(json!([{
+            "properties": {
+                "count": { "type": "integer", "default": 42 },
+                "enabled": { "type": "boolean", "default": true },
+                "tags": { "type": "array", "default": ["a", "b"] }
+            }
+        }]));
+
+        let defaults = extract_defaults(&entity);
+        assert_eq!(defaults["count"], json!(42));
+        assert_eq!(defaults["enabled"], json!(true));
+        assert_eq!(defaults["tags"], json!(["a", "b"]));
+    }
+
+    #[test]
+    fn explicit_param_overrides_default() {
+        let entity = make_entity(json!([{
+            "properties": {
+                "unit": { "type": "string", "default": "Hammerhead" },
+                "customer": { "type": "string" }
+            }
+        }]));
+
+        let mut values = extract_defaults(&entity);
+        // Simulate --param unit=OtherUnit --param customer=msalife
+        values.insert("unit".to_string(), json!("OtherUnit"));
+        values.insert("customer".to_string(), json!("msalife"));
+
+        assert_eq!(values["unit"], json!("OtherUnit"));
+        assert_eq!(values["customer"], json!("msalife"));
+    }
+
+    #[test]
+    fn no_default_field_stays_absent() {
+        let entity = make_entity(json!([{
+            "properties": {
+                "customer": { "type": "string" },
+                "region": { "type": "string" }
+            }
+        }]));
+
+        let defaults = extract_defaults(&entity);
+        assert!(defaults.is_empty());
+    }
+
+    #[test]
+    fn extract_defaults_single_step_not_array() {
+        // parameters can be a single object instead of an array
+        let entity = make_entity(json!({
+            "properties": {
+                "name": { "type": "string", "default": "test" }
+            }
+        }));
+
+        let defaults = extract_defaults(&entity);
+        assert_eq!(defaults.len(), 1);
+        assert_eq!(defaults["name"], json!("test"));
+    }
+
+    #[test]
+    fn extract_defaults_no_spec() {
+        let entity = json!({});
+        let defaults = extract_defaults(&entity);
+        assert!(defaults.is_empty());
+    }
+
+    #[test]
+    fn extract_defaults_null_default_ignored() {
+        let entity = make_entity(json!([{
+            "properties": {
+                "field": { "type": "string", "default": null }
+            }
+        }]));
+
+        let defaults = extract_defaults(&entity);
+        assert!(!defaults.contains_key("field"));
+    }
 }
